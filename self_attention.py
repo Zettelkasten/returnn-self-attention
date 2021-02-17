@@ -476,19 +476,6 @@ def add_lsh_self_attention_layer(
       'from': [output + '_query_sort_to_orig_chunked', output + '_key_accum_sort_to_orig_chunked'],
       'kind': 'greater_equal'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
     masking_layers_from.append(output + '_energy_chunked_mask_past_only')
-  if mask_current:
-    d[output + '_energy_chunked_mask_small'] = {
-      'class': 'compare',
-      'from': [output + '_query_sort_to_orig_chunked', output + '_key_accum_sort_to_orig_chunked'],
-      'kind': 'equal'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
-  else:
-    # We never want the attention weights to be NaN for any query (even for unmasked queries),
-    # and thus need to have at least one masked key for every query.
-    # Otherwise, the gradients will be NaN.
-    d[output + '_energy_chunked_mask_small'] = {
-      'class': 'compare',
-      'from': [output + '_query_hash_chunked'], 'value': hash_mask_value,
-      'kind': 'equal'}  # [B,query_chunk_dim?,query_window_dim?,n]
   if mask_different_hashes:
     # Masking valid positions is not necessary in this case as invalid positions will be masked with a special
     # hash value
@@ -498,11 +485,11 @@ def add_lsh_self_attention_layer(
       'kind': 'equal'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
     masking_layers_from.append(output + '_energy_chunked_mask_matching_hash')
   else:
-    d[output + '_energy_chunked_mask_valid_position'] = {
+    d[output + '_energy_chunked_mask_valid_key_position'] = {
       'class': 'compare',
       'from': [output + '_key_accum_hash_chunked'], 'value': hash_mask_value,
       'kind': 'not_equal'}  # [B,query_chunk_dim?,2*key_window_dim,n]
-    masking_layers_from.append(output + '_energy_chunked_mask_valid_position')
+    masking_layers_from.append(output + '_energy_chunked_mask_valid_key_position')
   if len(masking_layers_from) > 1:
     d[output + '_energy_chunked_mask'] = {
       'class': 'compare',
@@ -511,6 +498,31 @@ def add_lsh_self_attention_layer(
   else:
     d[output + '_energy_chunked_mask'] = {
       'class': 'copy', 'from': masking_layers_from}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
+
+  # Compute energy small mask (i.e. the entries that will be set to mask_current_value)
+  small_masking_layers_from = [output + '_energy_chunked_mask_small_invalid_query_position']
+  # We never want the attention weights to be NaN for any query (even for unmasked queries),
+  # and thus need to have at least one masked key for every query.
+  # Otherwise, the gradients will be NaN.
+  # We ensure this by masking all energies with a small (finite) number.
+  d[output + '_energy_chunked_mask_small_invalid_query_position'] = {
+    'class': 'compare',
+    'from': [output + '_query_hash_chunked'], 'value': hash_mask_value,
+    'kind': 'equal'}  # [B,query_chunk_dim?,query_window_dim?,n]
+  if mask_current:
+    d[output + '_energy_chunked_mask_small_current'] = {
+      'class': 'compare',
+      'from': [output + '_query_sort_to_orig_chunked', output + '_key_accum_sort_to_orig_chunked'],
+      'kind': 'equal'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
+    small_masking_layers_from.append(output + '_energy_chunked_mask_small_current')
+  if len(small_masking_layers_from) > 1:
+    d[output + '_energy_chunked_mask_small'] = {
+      'class': 'compare',
+      'from': small_masking_layers_from,
+      'kind': 'logical_or'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
+  else:
+    d[output + '_energy_chunked_mask_small'] = {
+      'class': 'copy', 'from': small_masking_layers_from}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
 
   # Compute energy
   d[output + '_energy_chunked_feature'] = {
