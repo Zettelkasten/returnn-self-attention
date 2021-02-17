@@ -24,6 +24,15 @@ class NameAxisLayer(_ConcatInputLayer):
   def __init__(self, axis, description, **kwargs):
     super(NameAxisLayer, self).__init__(**kwargs)
 
+    # Maybe we still need to unbroadcast a size_placeholder
+    if self.output.have_batch_axis():
+      for i, dyn_size in self.output.size_placeholder.items():
+        if len(dyn_size.shape) == 0 or dyn_size.shape[0] == 1:
+          dim_tag = DimensionTag.get_tag_from_size_tensor(dyn_size)
+          new_dyn_size = tf.broadcast_to(dyn_size, [tf.shape(self.output.placeholder)[self.output.batch_dim_axis]])
+          dim_tag.set_tag_on_size_tensor(new_dyn_size)
+          self.output.size_placeholder[i] = new_dyn_size
+
   @classmethod
   def get_out_data_from_opts(cls, name, axis, description, sources, **kwargs):
     """
@@ -58,7 +67,10 @@ class NameAxisLayer(_ConcatInputLayer):
         if ax_wo_batch in data.size_placeholder:
           dyn_size = tf.identity(data.size_placeholder[ax_wo_batch])
         else:
-          dyn_size = tf.identity(tf.constant(data.batch_shape[ax]))
+          assert data.batch_shape[ax] is not None
+          # this must actually be a [B]-tensor, but here it is not. we fix that later when we actually now the
+          # placeholder (with the size we need to unbroadcast to)
+          dyn_size = tf.constant(data.batch_shape[ax], shape=(1,))
         from returnn.tf.util.basic import DimensionTag
         tag = DimensionTag(
           description=descr,
@@ -172,7 +184,7 @@ def key_to_query_window_template(name, sources, chunk_size, **kwargs):
       dim=None,
       dtype=data.dtype
     )
-    dyn_size = tf.identity(chunk_size)
+    dyn_size = tf.constant(chunk_size, shape=(1,))
     tag = DimensionTag(
       description="query-window:%s" % name,
       kind=DimensionTag.Types.Time)
