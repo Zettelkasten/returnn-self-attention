@@ -4,17 +4,6 @@ from returnn.tf.layers.basic import register_layer_class, _ConcatInputLayer
 from returnn.tf.util.data import Data, DimensionTag
 
 
-def invert_permutation(source, **kwargs):
-  data = source(0, as_data=True)
-  from returnn.tf.util.basic import swapaxes
-  x = data.placeholder
-  # TODO: We can definitely speed up this
-  x = swapaxes(x, data.time_dim_axis, -1)
-  x = tf.reshape(tf.map_fn(fn=lambda x: tf.math.invert_permutation(x), elems=tf.reshape(x, [-1, tf.shape(x)[data.time_dim_axis]])), tf.shape(x))
-  x = swapaxes(x, data.time_dim_axis, -1)
-  return x
-
-
 class NameAxisLayer(_ConcatInputLayer):
   """
   Adds a DimensionTag to an axis s.t. it will be unique.
@@ -411,9 +400,13 @@ def add_lsh_self_attention_layer(
     'position': output + '_key_to_query_window'}  # [query_chunk_dim?,query_window_dim?,B,n] :: T|rec-history
 
   # Invert permutation to undo sorting later
+  d[output + '_kq_accum_orig_indices'] = {
+    'class': 'range_in_axis', 'from': [output + '_kq_accum_hash'], 'axis': 'stag:rec-history',
+    'keepdims': False}  # [T|rec-history] :: T|rec-history
   d[output + '_kq_accum_orig_to_sort'] = {
-    'class': 'eval', 'from': [output + '_kq_accum_sort_to_orig'],
-    'eval': invert_permutation}  # [B,T|rec-history,n] :: T|rec-history
+    'class': 'scatter_nd', 'from': [output + '_kq_accum_orig_indices'],
+    'position': output + '_kq_accum_sort_to_orig', 'position_axis': 'stag:rec-history',
+    'output_dim_via_time_from': output + '_kq_accum_sort_to_orig'}  # [B,T|rec-history,n] :: T|rec-history
 
   # Accumulate all past keys/queries
   d[output + '_kq_accum_unsorted'] = {
