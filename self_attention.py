@@ -184,6 +184,9 @@ def key_to_query_window_template(name, sources, chunk_size, **kwargs):
     return data
 
 
+normalize_eval = 'tf.math.divide_no_nan(source(0), tf.norm(source(0), axis=source(0, as_data=True).feature_dim_axis, ' \
+                 'keepdims=True))'
+
 def add_lsh_self_attention_layer(
   d, input, output, inside_rec_layer=True, past_only=None, time_axis=None,
   num_heads=8, key_dim=64, value_dim=64, dropout=0.0, num_hashes=14, chunk_size=5, chunks_before=None, chunks_after=None,
@@ -240,24 +243,22 @@ def add_lsh_self_attention_layer(
   # Assume input [B,T|classes?,F|d_model]
 
   # Create (unnormalized) key/query, value
-  d[output + '_kq0'] = {
+  d[output + '_qv0'] = {
     'class': 'linear', 'activation': None, 'with_bias': False, 'from': [input],
-    'n_out': num_heads * key_dim, 'forward_weights_init': ff_init}  # [B,T|classes?,F|n*d_k]
-  d[output + '_kq_unnamed'] = {
-    'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, key_dim),
-    'from': [output + '_kq0']}  # [B,T|classes?,n,F|d_k]
+    'n_out': num_heads * (key_dim + value_dim), 'forward_weights_init': ff_init}  # [B,T|classes?,F|n*(d_k+d_v)]
+  d[output + '_qv_unnamed'] = {
+    'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, key_dim + value_dim),
+    'from': [output + '_qv0']}  # [B,T|classes?,n,F|d_k+d_v]
+  d[output + '_qv'] = {
+    'class': 'name_axis', 'axis': 'static:-2', 'description': 'att-heads',
+    'from': [output + '_qv_unnamed']}  # [B,T|classes?,n,F|d_k+d_v]
+  d[output + '_qv_split'] = {
+    'class': 'split', 'axis': 'F', 'size_splits': (key_dim, value_dim),
+    'from': [output + '_qv']}
   d[output + '_kq'] = {
-    'class': 'name_axis', 'axis': 'static:-2', 'description': 'att-heads',
-    'from': [output + '_kq_unnamed']}  # [B,T|classes?,n,F|d_k]
-  d[output + '_value0'] = {
-    'class': 'linear', 'activation': None, 'with_bias': False, 'from': [input],
-    'n_out': num_heads * value_dim, 'forward_weights_init': ff_init}  # [B,T|classes?,F|n*d_v]
-  d[output + '_value_unnamed'] = {
-    'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, value_dim),
-    'from': [output + '_value0']}  # [B,T|classes?,n,F|d_v]
+    'class': 'copy', 'from': [output + '_qv_split/0']}  # [B,T|classes?,n,F|d_k]
   d[output + '_value'] = {
-    'class': 'name_axis', 'axis': 'static:-2', 'description': 'att-heads',
-    'from': [output + '_value_unnamed']}  # [B,T|classes?,n,F|d_v]
+    'class': 'copy', 'from': [output + '_qv_split/1']}  # [B,T|classes?,n,F|d_v]
 
   # Mappings from key chunk dim to query chunk dim
   if inside_rec_layer:
@@ -426,7 +427,7 @@ def add_lsh_self_attention_layer(
   # Compute attention keys
   d[output + '_key_accum_chunked_single'] = {
     'class': 'eval',
-    'eval': 'tf.math.divide_no_nan(source(0), tf.norm(source(0), axis=source(0, as_data=True).feature_dim_axis, keepdims=True))',
+    'eval': normalize_eval,
     'from': [output + '_kq_accum_chunked']}  # [key_chunk_dim,key_window_dim,B,n,F|d_k]
   for stack_offset in chunk_stack_offsets_before + chunk_stack_offsets_after:
     d[output + '_key_accum_chunked_offset%s' % stack_offset] = {
@@ -655,7 +656,23 @@ def add_vanilla_self_attention_layer(
     d[output + '_value'] = {
       'class': 'copy', 'from': [output + '_qkv_split/2']}  # [B,T?,n,F|d_v]
   else:  # share_key_query
-    assert False, 'not implemented yet'
+    d[output + '_qv0'] = {
+      'class': 'linear', 'activation': None, 'with_bias': False, 'from': [input],
+      'n_out': num_heads * (key_dim + value_dim), 'forward_weights_init': ff_init}  # [B,T?,F|n*(d_k+d_v)]
+    d[output + '_qv'] = {
+      'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, key_dim + value_dim),
+      'from': [output + '_qv0']}  # [B,T?,n,F|d_k+d_v]
+    d[output + '_qv_split'] = {
+      'class': 'split', 'axis': 'F', 'size_splits': (key_dim, value_dim),
+      'from': [output + '_qv']}
+    d[output + '_query'] = {
+      'class': 'copy', 'from': [output + '_qv_split/0']}  # [B,T?,n,F|d_k]
+    d[output + '_key'] = {
+      'class': 'eval',
+      'eval': normalize_eval,
+      'from': [output + '_query']}  # [B,T?,n,F|d_k]
+    d[output + '_value'] = {
+      'class': 'copy', 'from': [output + '_qv_split/1']}  # [B,T?,n,F|d_v]
 
   # Accumulate keys/values
   d[output + '_key_accum'] = {
@@ -667,21 +684,33 @@ def add_vanilla_self_attention_layer(
   d[output + '_energy'] = {
     'class': 'dot', 'from': [output + '_query', output + '_key_accum'],
     'red1': 'static:-1', 'red2': 'static:-1', 'var1': time_axis + '?', 'var2': 'stag:rec-history'}  # [B,n,T?,T|rec-history]
-  if past_only:
-    d[output + '_energy_unmasked'] = d[output + '_energy']
+
+  need_indices = past_only or mask_current
+  if need_indices:
     if inside_rec_layer:
       query_indices_from = ':i'
     else:
-      d[output + '_query_indices'] = {'class': 'range_in_axis', 'from': [input], 'axis': time_axis, 'keepdims': False}  # [T]
+      d[output + '_query_indices'] = {'class': 'range_in_axis', 'from': [input], 'axis': time_axis,
+        'keepdims': False}  # [T]
       query_indices_from = output + '_query_indices'
     d[output + '_key_accum_indices'] = {
-      'class': 'range_in_axis', 'from': [output + '_key_accum'], 'axis': 'stag:rec-history', 'keepdims': False}  # [T|rec-history]
+      'class': 'range_in_axis', 'from': [output + '_key_accum'], 'axis': 'stag:rec-history',
+      'keepdims': False}  # [T|rec-history]
+  if past_only:
+    d[output + '_energy_unmasked'] = d[output + '_energy']
     d[output + '_energy_mask'] = {
       'class': 'compare', 'kind': 'greater_equal', 'from': [query_indices_from, output + '_key_accum_indices']}
     d[output + '_energy'] = {
       'class': 'switch', 'true_from': output + '_energy_unmasked', 'false_from': float('-inf'),
       'condition': output + '_energy_mask'}  # [B,n,T?,T|rec-history]
-    assert not mask_current, 'not implemented yet'
+  if mask_current:
+    d[output + '_energy_unmasked_current'] = d[output + '_energy']
+    d[output + '_energy_mask_current'] = {
+      'class': 'compare', 'kind': 'equal', 'from': [query_indices_from, output + '_key_accum_indices']}
+    d[output + '_energy'] = {
+      'class': 'switch', 'true_from': mask_current_value, 'false_from': output + '_energy_unmasked_current',
+      'condition': output + '_energy_mask_current'}  # [B,n,T?,T|rec-history]
+
   # If past_only=True, do not apply a time mask here, as we apply our own masking using energy_mask.
   # If we would apply additional masking here, we would mask away all keys for queries that are unmasked, giving
   # attention weights NaN for these queries. Even though these are masked away later in the forward pass, the gradient
