@@ -536,7 +536,7 @@ def add_lsh_self_attention_layer(
     'false_from': output + '_energy_chunked_not_small'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
   d[output + '_weights_chunked'] = {
     'class': 'softmax_over_spatial', 'axis': 'stag:key-stacked-window',
-    'use_time_mask': False,
+    'use_time_mask': False, 'energy_factor': key_dim ** -0.5,
     'from': [output + '_energy_chunked']}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
   d[output + '_weights_chunked_drop'] = {
     'class': 'dropout', 'dropout_noise_shape': {'*': None}, 'from': [output + '_weights_chunked'],
@@ -599,20 +599,20 @@ def add_lsh_self_attention_layer(
     'from': [output + '_output_unnamed']}  # [B,T|classes?,F|n*d_v]
 
   if debug_print:
-    for name in [output + n for n in ['_kq', '_value', '_key_to_query_chunk', '_key_to_query_window',
-       '_kq_hash', '_kq_accum_hash', '_kq_accum_hash_chunked',
-       '_key_accum_hash_chunked', '_query_hash_chunked', '_kq_accum_sort_to_orig', '_kq_accum_orig_to_sort',
-       '_kq_accum_unsorted', '_kq_accum', '_kq_accum_chunked', '_key_accum_chunked', '_query_chunked',
-       '_energy_chunked_unmasked', '_energy_chunked_not_small', '_query_sort_to_orig_chunked', '_key_accum_sort_to_orig_chunked',
-       '_energy_chunked_mask', '_energy_chunked_mask_small',
-       '_energy_chunked', '_weights_chunked', '_value_accum_chunked',
-       '_output_chunked', '_output_sorted', '_output', '_att']] + masking_layers_from:
-      #d[name + '_orig'] = d[name]
-      #d[name] = {'class': 'print', 'from': [name + '_orig']}
-      d[name + '_print'] = {
-        'class': 'print', 'from': [name], 'is_output_layer': True}
-    d[output + '_input_print'] = {
-      'class': 'print', 'from': [input], 'is_output_layer': True}
+    for name in [output + n for n in [
+      '_kq', '_value', '_key_to_query_chunk', '_key_to_query_window',
+      '_kq_hash', '_kq_accum_hash', '_kq_accum_hash_chunked',
+      '_key_accum_hash_chunked', '_query_hash_chunked', '_kq_accum_sort_to_orig', '_kq_accum_orig_to_sort',
+      '_kq_accum_unsorted', '_kq_accum', '_kq_accum_chunked', '_key_accum_chunked', '_query_chunked',
+      '_energy_chunked_unmasked', '_energy_chunked_not_small', '_query_sort_to_orig_chunked', '_key_accum_sort_to_orig_chunked',
+      '_energy_chunked_mask', '_energy_chunked_mask_small',
+      '_energy_chunked', '_weights_chunked', '_value_accum_chunked',
+       '_output_chunked', '_output_sorted', '_output', '_att'
+    ]] + masking_layers_from + small_masking_layers_from:
+      d[name + '_orig'] = d[name]
+      d[name] = {'class': 'print', 'from': [name + '_orig']}
+      #d[name + '_print'] = {
+      #  'class': 'print', 'from': [name], 'is_output_layer': True}
 
 
 def add_vanilla_self_attention_layer(
@@ -649,11 +649,11 @@ def add_vanilla_self_attention_layer(
       'class': 'split', 'axis': 'F', 'size_splits': (key_dim, key_dim, value_dim),
       'from': [output + '_qkv']}
     d[output + '_query'] = {
-      'class': 'copy', 'from': [output + '_qkv_split/1']}  # [B,T?,n,F|d_k]
+      'class': 'copy', 'from': [output + '_qkv_split/0']}  # [B,T?,n,F|d_k]
     d[output + '_key'] = {
-      'class': 'copy', 'from': [output + '_qkv_split/2']}  # [B,T?,n,F|d_k]
+      'class': 'copy', 'from': [output + '_qkv_split/1']}  # [B,T?,n,F|d_k]
     d[output + '_value'] = {
-      'class': 'copy', 'from': [output + '_qkv_split/3']}  # [B,T?,n,F|d_v]
+      'class': 'copy', 'from': [output + '_qkv_split/2']}  # [B,T?,n,F|d_v]
   else:  # share_key_query
     assert False, 'not implemented yet'
 
@@ -661,7 +661,7 @@ def add_vanilla_self_attention_layer(
   d[output + '_key_accum'] = {
     'class': 'cum_concat', 'from': [output + '_key']}  # [B,T|rec-history,n,F|d_k]
   d[output + '_value_accum'] = {
-    'class': 'cum_concat', 'from': [output + '_key']}  # [B,T|rec-history,n,F|d_v]
+    'class': 'cum_concat', 'from': [output + '_value']}  # [B,T|rec-history,n,F|d_v]
 
   # Calculate the energies
   d[output + '_energy'] = {
@@ -677,13 +677,20 @@ def add_vanilla_self_attention_layer(
     d[output + '_key_accum_indices'] = {
       'class': 'range_in_axis', 'from': [output + '_key_accum'], 'axis': 'stag:rec-history', 'keepdims': False}  # [T|rec-history]
     d[output + '_energy_mask'] = {
-      'class': 'compare', 'kind': 'less_equal', 'from': [query_indices_from, output + '_key_accum_indices']}
+      'class': 'compare', 'kind': 'greater_equal', 'from': [query_indices_from, output + '_key_accum_indices']}
     d[output + '_energy'] = {
       'class': 'switch', 'true_from': output + '_energy_unmasked', 'false_from': float('-inf'),
       'condition': output + '_energy_mask'}  # [B,n,T?,T|rec-history]
     assert not mask_current, 'not implemented yet'
+  # If past_only=True, do not apply a time mask here, as we apply our own masking using energy_mask.
+  # If we would apply additional masking here, we would mask away all keys for queries that are unmasked, giving
+  # attention weights NaN for these queries. Even though these are masked away later in the forward pass, the gradient
+  # can still become NaN.
+  # If past_only=False, do apply the normal time mask.
   d[output + '_weights'] = {
-    'class': 'softmax_over_spatial', 'from': [output + '_energy'], 'axis': 'stag:rec-history'}  # [B,n,T?,T|rec-history]
+    'class': 'softmax_over_spatial', 'from': [output + '_energy'], 'axis': 'stag:rec-history',
+    'energy_factor': key_dim ** -0.5,
+    'use_time_mask': not past_only}  # [B,n,T?,T|rec-history]
   d[output + '_output'] = {
     'class': 'dot', 'from': [output + '_weights', output + '_value_accum'],
     'red1': 'stag:rec-history', 'red2': 'stag:rec-history', 'var1': time_axis + '?', 'var2': 'static:-1'}  # [B,n,T?,F|d_v]
