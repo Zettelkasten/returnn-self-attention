@@ -691,6 +691,10 @@ def add_vanilla_self_attention_layer(
     'class': 'softmax_over_spatial', 'from': [output + '_energy'], 'axis': 'stag:rec-history',
     'energy_factor': key_dim ** -0.5,
     'use_time_mask': not past_only}  # [B,n,T?,T|rec-history]
+  d[output + '_weights_drop'] = {
+    'class': 'dropout', 'dropout_noise_shape': {'*': None}, 'from': [output + '_weights'],
+    'dropout': dropout}  # [B,n,T?,T|rec-history]
+
   d[output + '_output'] = {
     'class': 'dot', 'from': [output + '_weights', output + '_value_accum'],
     'red1': 'stag:rec-history', 'red2': 'stag:rec-history', 'var1': time_axis + '?', 'var2': 'static:-1'}  # [B,n,T?,F|d_v]
