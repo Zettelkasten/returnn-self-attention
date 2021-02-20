@@ -358,7 +358,7 @@ def add_lsh_self_attention_layer(
     'eval': 'tf.argsort(source(0), axis=source(0, as_data=True).get_axis_from_description("stag:rec-history"), direction="ASCENDING", stable=True)',
     'from': [output + '_kq_accum_hash']}  # [B,T|rec-history,n] :: T|rec-history
   d[output + '_kq_accum_sort_to_orig_chunked_feature'] = {
-    'class': 'split_dims', 'from': [output + '_kq_accum_sort_to_orig'],
+    'class': 'split_dims', 'from': [output + '_kq_accum_sort_to_orig'], 'pad_value': hash_mask_value,
     'axis': 'stag:rec-history', 'dims': [-1, chunk_size]}  # [key_chunk_dim,key_window_dim,B,n] :: T|rec-history
   d[output + '_kq_accum_sort_to_orig_chunked_unnamed'] = {
     'class': 'reinterpret_data', 'from': [output + '_kq_accum_sort_to_orig_chunked_feature'],
