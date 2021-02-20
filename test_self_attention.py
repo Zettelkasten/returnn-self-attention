@@ -28,42 +28,42 @@ def test_lsh_attention_optimize_out():
     other_subnet_layers=network)
 
 
-def test_lsh_attention_full():
+def _test_lsh_self_attention_no_mask_different_hashes(
+    n_time, past_only, mask_current, chunk_size, chunks_before, chunks_after, n_batch=3):
+  print(
+    'Testing n_time =', n_time, 'past_only =', past_only, 'mask_current =', mask_current, 'chunk_size =', chunk_size,
+    'chunks_before =', chunks_before, 'chunks_after =', chunks_after)
   with make_scope() as session:
-    n_time = 13
-    chunk_size, chunks_before, chunks_after = 5, 1, 1
-    assert n_time <= chunk_size * (chunks_before + 1 + chunks_after)
+    total_chunks = chunks_before + 1 + chunks_after
+    assert n_time <= chunk_size * (chunks_before + 1 + chunks_after), (
+      'if chunk size is too small, vanilla attention != lsh attention')
+    assert n_time >= chunk_size * (total_chunks - 1), 'if chunk size is too big, we might attend multiple times'
     num_heads, key_dim, value_dim = 2, 3, 3
     net_dict = {
-      "kq": {"class": "copy", "from": "lsh_kq"},  # [B,T,heads,F]
-      "key_name": {"class": "name_axis", "from": "kq", "axis": "T", "description": "key-time"},  # [B,T,heads,F]
-      "key_norm": {"class": "eval", "from": "key_name", "eval": "tf.math.divide_no_nan(source(0), tf.norm(source(0), axis=source(0, as_data=True).feature_dim_axis, keepdims=True))"},  # [B,T,heads,F]
-      "query": {"class": "name_axis", "from": "kq", "axis": "T", "description": "query-time"},  # [B,T,heads,F]
-      "value": {"class": "name_axis", "from": "lsh_value", "axis": "T", "description": "key-time"},  # [B,T,heads,F]
-      "energy": {"class": "dot", "from": ["key_norm", "query"], "red1": "F", "red2": "F", "var1": "T", "var2": "T"},  # [B,T1,T2,heads]
-      "weights": {"class": "softmax_over_spatial", "from": "energy", "axis": "stag:key-time"},  # [B,T1,heads,T2]
-      "vanilla_out": {
-        "class": "dot", "from": ["weights", "value"], "is_output_layer": True,
-        "red1": "stag:key-time", "red2": "stag:key-time", "var1": "stag:query-time", "var2": "F"},  # [B,T1,heads,F]
+      "lsh_out": {"class": "copy", "from": "lsh_att", "is_output_layer": True},  # [B,T1,F]
+      "vanilla_out": {"class": "copy", "from": "vanilla_att", "is_output_layer": True},  # [B,T1,F]
 
-      "lsh_out": {"class": "copy", "from": "lsh_output", "is_output_layer": True},  # [B,T1,heads,F]
-
-      "output": {"class": "copy", "from": ["lsh_att"]}  # [B,T,F]
-    }
+      "output": {"class": "copy", "from": ["lsh_att"]}}  # [B,T,F]
     add_lsh_self_attention_layer(
-      net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=False,
+      net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only,
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=26,
       chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
-      mask_current=False, mask_different_hashes=False, debug_print=True)
+      mask_current=mask_current, mask_different_hashes=False, debug_print=True)
+    add_vanilla_self_attention_layer(
+      net_dict, 'data', 'vanilla', inside_rec_layer=False, past_only=past_only,
+      num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, share_key_query=True,
+      mask_current=mask_current
+    )
+    net_dict["vanilla_qv0"]["reuse_params"] = "lsh_qv0"
 
     config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
     config.update(dict(num_inputs=num_heads*key_dim, num_outputs=num_heads*value_dim))
     network = TFNetwork(config=config, train_flag=True)
     network.construct_from_dict(net_dict)
 
-    assert_equal(network.get_layer("vanilla_out").output.shape, (num_heads, None, value_dim))
-    assert_equal(network.get_layer("lsh_out").output.shape, (num_heads, None, value_dim))
-    feed_dict = make_feed_dict(network.extern_data.data.values(), same_time=True, n_time=n_time)
+    assert_equal(network.get_layer("vanilla_out").output.shape, (None, num_heads * value_dim))
+    assert_equal(network.get_layer("lsh_out").output.shape, (None, num_heads * value_dim))
+    feed_dict = make_feed_dict(network.extern_data.data.values(), same_time=True, n_batch=n_batch, n_time=n_time)
     session.run(tf_compat.v1.global_variables_initializer())
 
     input_out = network.get_layer("data").output
@@ -79,8 +79,8 @@ def test_lsh_attention_full():
     numpy.testing.assert_equal(lsh_sizes, sizes)
     # take into account different seq lengths
     assert vanilla_out.batch_dim_axis == lsh_out.batch_dim_axis == 0
-    assert vanilla_out.time_dim_axis == lsh_out.time_dim_axis == 2
-    mask = (numpy.arange(numpy.shape(vanilla)[2]).reshape([1,1,-1,1]) < sizes.reshape([-1,1,1,1]))
+    assert vanilla_out.time_dim_axis == lsh_out.time_dim_axis == 1
+    mask = (numpy.arange(numpy.shape(vanilla)[1]).reshape([1,-1,1]) < sizes.reshape([-1,1,1]))
     vanilla = vanilla * mask
     lsh = lsh * mask
     print('seq lengths:', sizes)
@@ -89,76 +89,21 @@ def test_lsh_attention_full():
     print('lsh:  -', lsh_out)
     pprint(lsh)
     numpy.testing.assert_almost_equal(vanilla, lsh, decimal=5)
+    print('They are equal!')
 
 
-def test_lsh_attention_full_past_only():
-  with make_scope() as session:
-    n_time = 13
-    chunk_size, chunks_before, chunks_after = 7, 1, 0
-    assert n_time <= chunk_size * (chunks_before + 1 + chunks_after)
-    num_heads, key_dim, value_dim = 2, 3, 3
-    net_dict = {
-      "kq": {"class": "copy", "from": "lsh_kq"},  # [B,T,heads,F]
-      "key_name": {"class": "name_axis", "from": "kq", "axis": "T", "description": "key-time"},  # [B,T,heads,F]
-      "key_norm": {"class": "eval", "from": "key_name", "eval": "tf.math.divide_no_nan(source(0), tf.norm(source(0), axis=source(0, as_data=True).feature_dim_axis, keepdims=True))"},  # [B,T,heads,F]
-      "query": {"class": "name_axis", "from": "kq", "axis": "T", "description": "query-time"},  # [B,T,heads,F]
-      "value": {"class": "name_axis", "from": "lsh_value", "axis": "T", "description": "key-time"},  # [B,T,heads,F]
-      "energy": {"class": "dot", "from": ["key_norm", "query"], "red1": "F", "red2": "F", "var1": "T", "var2": "T"},  # [B,T1,T2,heads]
-      "key_pos": {"class": "range_in_axis", "from": "key_norm", "axis": "T", "keepdims": False},  # [B,T,heads,F] , actually just [T] necessary
-      "query_pos": {"class": "range_in_axis", "from": "query", "axis": "T", "keepdims": False},  # [B,T,heads,F] , actually just [T] necessary
-      "energy_mask": {"class": "compare", "kind": "less_equal", "from": ["key_pos", "query_pos"]},  # [T1,T2]
-      "energy_masked": {"class": "switch", "true_from": "energy", "false_from": float("-inf"), "condition": "energy_mask"},  # [B,T1,T2,heads]
-      "weights": {"class": "softmax_over_spatial", "from": "energy_masked", "axis": "stag:key-time"},  # [B,T1,heads,T2]
-      "vanilla_out": {
-        "class": "dot", "from": ["weights", "value"], "is_output_layer": True,
-        "red1": "stag:key-time", "red2": "stag:key-time", "var1": "stag:query-time", "var2": "F"},  # [B,T1,heads,F]
-
-      "lsh_out": {"class": "copy", "from": "lsh_output", "is_output_layer": True},  # [B,T1,heads,F]
-
-      "output": {"class": "copy", "from": ["lsh_att"]}  # [B,T,F]
-    }
-    add_lsh_self_attention_layer(
-      net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=True,
-      num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=26,
-      chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
-      mask_current=False, mask_different_hashes=False)
-
-    config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
-    config.update(dict(num_inputs=num_heads*key_dim, num_outputs=num_heads*value_dim))
-    network = TFNetwork(config=config, train_flag=True)
-    network.construct_from_dict(net_dict)
-
-    assert_equal(network.get_layer("vanilla_out").output.shape, (num_heads, None, value_dim))
-    assert_equal(network.get_layer("lsh_out").output.shape, (num_heads, None, value_dim))
-    feed_dict = make_feed_dict(network.extern_data.data.values(), same_time=True, n_time=n_time)
-    session.run(tf_compat.v1.global_variables_initializer())
-
-    input_out = network.get_layer("data").output
-    vanilla_out = network.get_layer("vanilla_out").output
-    lsh_out = network.get_layer("lsh_out").output
-    vanilla, lsh, sizes, vanilla_sizes, lsh_sizes = session.run(
-      [vanilla_out.placeholder, lsh_out.placeholder,
-        input_out.size_placeholder[input_out.time_dim_axis_excluding_batch],
-        vanilla_out.size_placeholder[vanilla_out.time_dim_axis_excluding_batch],
-        lsh_out.size_placeholder[lsh_out.time_dim_axis_excluding_batch]],
-      feed_dict=feed_dict)
-    numpy.testing.assert_equal(vanilla_sizes, sizes)
-    numpy.testing.assert_equal(lsh_sizes, sizes)
-    # take into account different seq lengths
-    assert vanilla_out.batch_dim_axis == lsh_out.batch_dim_axis == 0
-    assert vanilla_out.time_dim_axis == lsh_out.time_dim_axis == 2
-    mask = (numpy.arange(numpy.shape(vanilla)[2]).reshape([1,1,-1,1]) < sizes.reshape([-1,1,1,1]))
-    vanilla = vanilla * mask
-    lsh = lsh * mask
-    print('seq lengths:', sizes)
-    print('vanilla:  - ', vanilla_out)
-    pprint(vanilla)
-    print('lsh:  - ', lsh_out)
-    pprint(lsh)
-    numpy.testing.assert_almost_equal(vanilla, lsh, decimal=5)
+def test_lsh_self_attention_no_mask_different_hashes():
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=False, mask_current=False, chunk_size=5, chunks_before=1, chunks_after=1)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=False, mask_current=True, chunk_size=5, chunks_before=1, chunks_after=1)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=True, mask_current=False, chunk_size=7, chunks_before=1, chunks_after=0)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=True, mask_current=True, chunk_size=7, chunks_before=1, chunks_after=0)
 
 
-def test_vanilla_self_attention():
+def test_vanilla_self_attention_equal_to_SelfAttentionLayer():
   for past_only in [False, True]:
     with make_scope() as session:
       print('Testing past_only=%s' % past_only)
