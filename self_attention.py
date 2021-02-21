@@ -126,7 +126,6 @@ def maybe_gather_template(network, name, sources, **kwargs):
 
 def key_to_query_chunk(source, chunk_size, **kwargs):
   data = source(0, as_data=True, auto_convert=False)
-  assert len(data.batch_shape) <= 1
   if data.have_time_axis():
     from returnn.tf.util.basic import get_shape
     # essentially a ceildiv
@@ -135,26 +134,27 @@ def key_to_query_chunk(source, chunk_size, **kwargs):
   else:
     return data.placeholder // chunk_size
 
+
 def key_to_query_chunk_template(name, sources, chunk_size, **kwargs):
   data = Data.get_common_data([s.output for s in sources])
-  assert len(data.batch_shape) <= 1
   if data.have_time_axis():
+    new_data = Data('%s_output' % name, batch_dim_axis=None, time_dim_axis=0, feature_dim_axis=None, dtype=data.dtype)
     from returnn.tf.util.basic import DimensionTag
     # TODO: Not sure if this is correct. how many entries should this have?
-    dyn_size = data.size_placeholder[data.get_batch_axis_excluding_batch(data.time_dim_axis)] // chunk_size
+    dyn_size = data.size_placeholder[data.time_dim_axis_excluding_batch] // chunk_size
     tag = DimensionTag(
       description="query-chunk:%s" % name,
       kind=DimensionTag.Types.Time)
-    data.size_placeholder[data.get_batch_axis_excluding_batch(data.time_dim_axis)] = dyn_size
+    new_data.size_placeholder[new_data.time_dim_axis_excluding_batch] = dyn_size
     tag.set_tag_on_size_tensor(dyn_size)
-  return data
+    return new_data
+  else:
+    return data.copy('%s_output' % name)
 
 
 def key_to_query_window(source, chunk_size, **kwargs):
   data = source(0, as_data=True, auto_convert=False)
-  assert len(data.batch_shape) <= 1
   if data.have_time_axis():
-    from returnn.tf.util.basic import get_shape
     return tf.range(start=0, limit=chunk_size)
   else:
     return data.placeholder % chunk_size
@@ -162,26 +162,17 @@ def key_to_query_window(source, chunk_size, **kwargs):
 
 def key_to_query_window_template(name, sources, chunk_size, **kwargs):
   data = Data.get_common_data([s.output for s in sources])
-  assert len(data.batch_shape) <= 1
   if data.have_time_axis():
-    new_data = Data(
-      name="%s_output" % name,
-      batch_dim_axis=None,
-      time_dim_axis=None,
-      feature_dim_axis=None,
-      shape=(chunk_size,),
-      dim=None,
-      dtype=data.dtype
-    )
+    new_data = Data('%s_output' % name, batch_dim_axis=None, time_dim_axis=0, feature_dim_axis=None, dtype=data.dtype)
     dyn_size = tf.constant(chunk_size, shape=(1,))
     tag = DimensionTag(
       description="query-window:%s" % name,
       kind=DimensionTag.Types.Time)
-    new_data.size_placeholder[0] = dyn_size
+    new_data.size_placeholder[new_data.time_dim_axis_excluding_batch] = dyn_size
     tag.set_tag_on_size_tensor(dyn_size)
     return new_data
   else:
-    return data
+    return data.copy('%s_output' % name)
 
 
 normalize_eval = 'tf.math.divide_no_nan(source(0), tf.norm(source(0), axis=source(0, as_data=True).feature_dim_axis, ' \
@@ -267,11 +258,16 @@ def add_lsh_self_attention_layer(
     d[output + '_indices'] = {
       'class': 'range_in_axis', 'from': [input], 'axis': time_axis, 'keepdims': False}  # [T|classes]
     indices_from = output + '_indices'
-  d[output + '_key_to_query_chunk'] = {
-    'class': 'eval', 'from': [indices_from], 'eval': key_to_query_chunk, 'out_type': key_to_query_chunk_template,
+  d[output + '_query_orig_to_sort'] = {
+    'class': 'gather', 'from': [output + '_kq_accum_orig_to_sort'], 'position': indices_from,
+    'axis': 'stag:rec-history'}  # [B,T|classes?,n] :: T|rec-history
+  d[output + '_sort_key_to_query_chunk'] = {
+    'class': 'eval', 'from': [output + '_query_orig_to_sort'],
+    'eval': key_to_query_chunk, 'out_type': key_to_query_chunk_template,
     'eval_locals': {'chunk_size': chunk_size}}  # [query_chunk_dim?] :: key_chunk_dim
-  d[output + '_key_to_query_window'] = {
-    'class': 'eval', 'from': [indices_from], 'eval': key_to_query_window, 'out_type': key_to_query_window_template,
+  d[output + '_sort_key_to_query_window'] = {
+    'class': 'eval', 'from': [output + '_query_orig_to_sort'],
+    'eval': key_to_query_window, 'out_type': key_to_query_window_template,
     'eval_locals': {'chunk_size': chunk_size}}  # [query_window_dim?] :: key_window_dim
 
   # Hash the key/query
@@ -342,15 +338,15 @@ def add_lsh_self_attention_layer(
   d[output + '_key_accum_hash_chunked'] = {
     'class': 'gather', 'from': [output + '_key_accum_hash_chunked_stacked'],
     'axis': 'stag:key-chunk',
-    'position': output + '_key_to_query_chunk'}  # [query_chunk_dim?,2*key_window_dim,B,n] :: d_h
+    'position': output + '_sort_key_to_query_chunk'}  # [query_chunk_dim?,2*key_window_dim,B,n] :: d_h
   d[output + '_query_hash_chunked_all'] = {
     'class': 'gather', 'from': [output + '_kq_accum_hash_chunked'],
     'axis': 'stag:key-chunk',
-    'position': output + '_key_to_query_chunk'}  # [query_chunk_dim?,key_window_dim,B,n] :: d_h
+    'position': output + '_sort_key_to_query_chunk'}  # [query_chunk_dim?,key_window_dim,B,n] :: d_h
   d[output + '_query_hash_chunked'] = {
     'class': 'gather', 'from': [output + '_query_hash_chunked_all'],
     'axis': 'stag:key-window',
-    'position': output + '_key_to_query_window'}  # [query_chunk_dim?,query_window_dim?,B,n] :: d_h
+    'position': output + '_sort_key_to_query_window'}  # [query_chunk_dim?,query_window_dim?,B,n] :: d_h
 
   # Sort the hashes
   d[output + '_kq_accum_sort_to_orig'] = {
@@ -390,15 +386,15 @@ def add_lsh_self_attention_layer(
   d[output + '_key_accum_sort_to_orig_chunked'] = {
     'class': 'gather', 'from': [output + '_key_accum_sort_to_orig_chunked_stacked'],
     'axis': 'stag:key-chunk',
-    'position': output + '_key_to_query_chunk'}  # [query_chunk_dim?,2*key_window_dim,B,n] :: T|rec-history
+    'position': output + '_sort_key_to_query_chunk'}  # [query_chunk_dim?,2*key_window_dim,B,n] :: T|rec-history
   d[output + '_query_sort_to_orig_chunked_all'] = {
     'class': 'gather', 'from': [output + '_kq_accum_sort_to_orig_chunked'],
     'axis': 'stag:key-chunk',
-    'position': output + '_key_to_query_chunk'}  # [query_chunk_dim?,key_window_dim,B,n] :: T|rec-history
+    'position': output + '_sort_key_to_query_chunk'}  # [query_chunk_dim?,key_window_dim,B,n] :: T|rec-history
   d[output + '_query_sort_to_orig_chunked'] = {
     'class': 'gather', 'from': [output + '_query_sort_to_orig_chunked_all'],
     'axis': 'stag:key-window',
-    'position': output + '_key_to_query_window'}  # [query_chunk_dim?,query_window_dim?,B,n] :: T|rec-history
+    'position': output + '_sort_key_to_query_window'}  # [query_chunk_dim?,query_window_dim?,B,n] :: T|rec-history
 
   # Invert permutation to undo sorting later
   d[output + '_kq_accum_orig_indices'] = {
@@ -450,17 +446,17 @@ def add_lsh_self_attention_layer(
   d[output + '_key_accum_chunked'] = {
     'class': 'gather', 'from': [output + '_key_accum_chunked_stacked'],
     'axis': 'stag:key-chunk',
-    'position': output + '_key_to_query_chunk'}  # [query_chunk_dim?,2*key_window_dim,B,n,F|d_k]
+    'position': output + '_sort_key_to_query_chunk'}  # [query_chunk_dim?,2*key_window_dim,B,n,F|d_k]
 
   # Compute attention queries
   d[output + '_query_chunked_all'] = {
     'class': 'gather', 'from': [output + '_kq_accum_chunked'],
     'axis': 'stag:key-chunk',
-    'position': output + '_key_to_query_chunk'}  # [query_chunk_dim?,key_window_dim,B,n,F|d_k]
+    'position': output + '_sort_key_to_query_chunk'}  # [query_chunk_dim?,key_window_dim,B,n,F|d_k]
   d[output + '_query_chunked'] = {
     'class': 'gather', 'from': [output + '_query_chunked_all'],
     'axis': 'stag:key-window',
-    'position': output + '_key_to_query_window'}  # [query_chunk_dim?,query_window_dim?,B,n,F|d_k]
+    'position': output + '_sort_key_to_query_window'}  # [query_chunk_dim?,query_window_dim?,B,n,F|d_k]
 
   # Compute energy mask
   masking_layers_from = []
@@ -578,7 +574,7 @@ def add_lsh_self_attention_layer(
   d[output + '_value_accum_chunked'] = {
     'class': 'gather', 'from': [output + '_value_accum_chunked_stacked'],
     'axis': 'stag:key-chunk',
-    'position': output + '_key_to_query_chunk'}  # [query_chunk_dim?,2*key_window_dim,B,n,F|d_v]
+    'position': output + '_sort_key_to_query_chunk'}  # [query_chunk_dim?,2*key_window_dim,B,n,F|d_v]
 
   # Compute the outputted weighted sum (i.e. the context vector)
   d[output + '_output_chunked'] = {
@@ -601,13 +597,13 @@ def add_lsh_self_attention_layer(
 
   if debug_print:
     for name in [output + n for n in [
-      '_kq', '_value', '_key_to_query_chunk', '_key_to_query_window',
+      '_kq', '_value', '_sort_key_to_query_chunk', '_sort_key_to_query_window',
       '_kq_hash', '_kq_accum_hash', '_kq_accum_hash_chunked',
       '_key_accum_hash_chunked', '_query_hash_chunked', '_kq_accum_sort_to_orig', '_kq_accum_orig_to_sort',
       '_kq_accum_unsorted', '_kq_accum', '_kq_accum_chunked', '_key_accum_chunked', '_query_chunked',
       '_energy_chunked_unmasked', '_energy_chunked_not_small', '_query_sort_to_orig_chunked', '_key_accum_sort_to_orig_chunked',
       '_energy_chunked_mask', '_energy_chunked_mask_small',
-      '_energy_chunked', '_weights_chunked', '_value_accum_chunked',
+      '_energy_chunked', '_weights_chunked', '_value_accum_unsorted', '_value_accum', '_value_accum_chunked',
        '_output_chunked', '_output_sorted', '_output', '_att'
     ]] + masking_layers_from + small_masking_layers_from:
       d[name + '_orig'] = d[name]

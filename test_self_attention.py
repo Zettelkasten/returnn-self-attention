@@ -16,15 +16,17 @@ from returnn.tf.layers.basic import *
 from lsh_attention import *
 
 
-# TODO: Currently fails. Why?
 def test_lsh_attention_optimize_out():
+  chunk_size, chunks_before, chunks_after = 1, 0, 0
+  num_heads, key_dim, value_dim = 2, 3, 3
   network = {}
   add_lsh_self_attention_layer(
-    network, 'data:source', 'att', chunks_before=1, chunks_after=0, chunk_size=10, debug_print=True,
-    num_heads=2, key_dim=3, value_dim=3, num_hashes=26, inside_rec_layer=True, past_only=True, time_axis='stag:extern_data:data')
+    network, 'data:source', 'att', chunks_before=chunks_before, chunks_after=chunks_after, chunk_size=chunk_size,
+    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=26, inside_rec_layer=True, past_only=True,
+    time_axis='stag:extern_data:data', debug_print=True)
 
   check_reclayer_optimize_out(
-    {'class': 'linear', 'from': 'att_att', 'activation': None},
+    {'class': 'copy', 'from': 'att_att', 'n_out': value_dim * num_heads},
     other_subnet_layers=network)
 
 
