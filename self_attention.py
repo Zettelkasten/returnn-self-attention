@@ -128,7 +128,7 @@ def key_to_query_chunk(source, chunk_size, **kwargs):
   data = source(0, as_data=True, auto_convert=False)
   if data.have_time_axis():
     from returnn.tf.util.basic import get_shape
-    # essentially a ceildiv
+    # ceildiv(dyn_size, chunk_size)
     num_chunks = tf.math.floordiv(get_shape(data.placeholder)[data.time_dim_axis] + chunk_size - 1, chunk_size)
     return tf.range(start=0, limit=num_chunks, dtype="int32")
   else:
@@ -139,9 +139,9 @@ def key_to_query_chunk_template(name, sources, chunk_size, **kwargs):
   data = Data.get_common_data([s.output for s in sources])
   if data.have_time_axis():
     new_data = Data('%s_output' % name, batch_dim_axis=None, time_dim_axis=0, feature_dim_axis=None, dtype=data.dtype)
-    from returnn.tf.util.basic import DimensionTag
-    # TODO: Not sure if this is correct. how many entries should this have?
-    dyn_size = data.size_placeholder[data.time_dim_axis_excluding_batch] // chunk_size
+    from returnn.tf.util.basic import DimensionTag, get_shape
+    # ceildiv(dyn_size, chunk_size)
+    dyn_size = tf.math.floordiv(data.size_placeholder[data.time_dim_axis_excluding_batch] + chunk_size - 1, chunk_size)
     tag = DimensionTag(
       description="query-chunk:%s" % name,
       kind=DimensionTag.Types.Time)
@@ -164,7 +164,8 @@ def key_to_query_window_template(name, sources, chunk_size, **kwargs):
   data = Data.get_common_data([s.output for s in sources])
   if data.have_time_axis():
     new_data = Data('%s_output' % name, batch_dim_axis=None, time_dim_axis=0, feature_dim_axis=None, dtype=data.dtype)
-    dyn_size = tf.constant(chunk_size, shape=(1,))
+    from returnn.tf.util.basic import get_shape
+    dyn_size = tf.fill(get_shape(data.size_placeholder[data.time_dim_axis_excluding_batch]), chunk_size)
     tag = DimensionTag(
       description="query-window:%s" % name,
       kind=DimensionTag.Types.Time)
