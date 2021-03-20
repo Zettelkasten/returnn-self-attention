@@ -168,6 +168,18 @@ def test_vanilla_self_attention_equal_to_SelfAttentionLayer():
       print('They are equal!')
 
 
+def test_vanilla_self_attention_optimize_out():
+  num_heads, key_dim, value_dim = 2, 3, 3
+  network = {}
+  add_vanilla_self_attention_layer(
+    network, 'data:source', 'att', inside_rec_layer=True, past_only=True, time_axis='stag:extern_data:data',
+    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim)
+
+  check_reclayer_optimize_out(
+    {'class': 'copy', 'from': 'att_att', 'n_out': value_dim * num_heads},
+    other_subnet_layers=network)
+
+
 if __name__ == "__main__":
   try:
     better_exchook.install()
