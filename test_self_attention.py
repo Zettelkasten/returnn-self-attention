@@ -22,8 +22,8 @@ def test_lsh_attention_optimize_out():
   network = {}
   add_lsh_self_attention_layer(
     network, 'data:source', 'att', chunks_before=chunks_before, chunks_after=chunks_after, chunk_size=chunk_size,
-    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=26, inside_rec_layer=True, past_only=True,
-    time_axis='stag:extern_data:data', debug_print=True)
+    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=26, inside_rec_layer=True, past_only=True, allow_duplicate_attention=False,
+    time_axis='stag:extern_data:data')
 
   check_reclayer_optimize_out(
     {'class': 'copy', 'from': 'att_att', 'n_out': value_dim * num_heads},
@@ -31,16 +31,17 @@ def test_lsh_attention_optimize_out():
 
 
 def _test_lsh_self_attention_no_mask_different_hashes(
-    n_time, past_only, mask_current, chunk_size, chunks_before, chunks_after, n_batch=3):
+    n_time, past_only, mask_current, chunk_size, chunks_before, chunks_after, duplicates, n_batch=3,
+    num_heads=2, key_dim=3, value_dim=3, num_hashes=26):
   print(
     'Testing n_time =', n_time, 'past_only =', past_only, 'mask_current =', mask_current, 'chunk_size =', chunk_size,
-    'chunks_before =', chunks_before, 'chunks_after =', chunks_after)
+    'chunks_before =', chunks_before, 'chunks_after =', chunks_after, 'allow_duplicate_attention =', duplicates)
   with make_scope() as session:
     total_chunks = chunks_before + 1 + chunks_after
     assert n_time <= chunk_size * (chunks_before + 1 + chunks_after), (
       'if chunk size is too small, vanilla attention != lsh attention')
-    assert n_time >= chunk_size * (total_chunks - 1), 'if chunk size is too big, we might attend multiple times'
-    num_heads, key_dim, value_dim = 2, 3, 3
+    assert not duplicates or n_time >= chunk_size * (total_chunks - 1), (
+      'if chunk size is too big, we might attend multiple times')
     net_dict = {
       "lsh_out": {"class": "copy", "from": "lsh_att", "is_output_layer": True},  # [B,T1,F]
       "vanilla_out": {"class": "copy", "from": "vanilla_att", "is_output_layer": True},  # [B,T1,F]
@@ -48,9 +49,9 @@ def _test_lsh_self_attention_no_mask_different_hashes(
       "output": {"class": "copy", "from": ["lsh_att"]}}  # [B,T,F]
     add_lsh_self_attention_layer(
       net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only,
-      num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=26,
+      num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
       chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
-      mask_current=mask_current, mask_different_hashes=False, debug_print=True)
+      mask_current=mask_current, mask_different_hashes=False, allow_duplicate_attention=duplicates, debug_print=True)
     add_vanilla_self_attention_layer(
       net_dict, 'data', 'vanilla', inside_rec_layer=False, past_only=past_only,
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, share_key_query=True,
@@ -96,13 +97,33 @@ def _test_lsh_self_attention_no_mask_different_hashes(
 
 def test_lsh_self_attention_no_mask_different_hashes():
   _test_lsh_self_attention_no_mask_different_hashes(
-    n_time=13, past_only=False, mask_current=False, chunk_size=5, chunks_before=1, chunks_after=1)
+    n_time=13, past_only=False, mask_current=False, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True)
   _test_lsh_self_attention_no_mask_different_hashes(
-    n_time=13, past_only=False, mask_current=True, chunk_size=5, chunks_before=1, chunks_after=1)
+    n_time=13, past_only=False, mask_current=True, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True)
   _test_lsh_self_attention_no_mask_different_hashes(
-    n_time=13, past_only=True, mask_current=False, chunk_size=7, chunks_before=1, chunks_after=0)
+    n_time=13, past_only=True, mask_current=False, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=True)
   _test_lsh_self_attention_no_mask_different_hashes(
-    n_time=13, past_only=True, mask_current=True, chunk_size=7, chunks_before=1, chunks_after=0)
+    n_time=13, past_only=True, mask_current=True, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=True)
+
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=2, past_only=False, mask_current=False, chunk_size=1, chunks_before=2, chunks_after=0, duplicates=False, n_batch=1, num_heads=1)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=2, past_only=False, mask_current=False, chunk_size=1, chunks_before=2, chunks_after=0, duplicates=False)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=False, mask_current=False, chunk_size=5, chunks_before=2, chunks_after=0, duplicates=False)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=False, mask_current=False, chunk_size=5, chunks_before=3, chunks_after=0, duplicates=False)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=True, mask_current=False, chunk_size=5, chunks_before=3, chunks_after=0, duplicates=False)
+
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=False, mask_current=False, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=False)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=False, mask_current=True, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=False)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=True, mask_current=False, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=False)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=True, mask_current=True, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=False)
 
 
 def test_vanilla_self_attention_equal_to_SelfAttentionLayer():
@@ -145,6 +166,7 @@ def test_vanilla_self_attention_equal_to_SelfAttentionLayer():
       pprint(multi)
       numpy.testing.assert_almost_equal(single, multi, decimal=5)
       print('They are equal!')
+
 
 if __name__ == "__main__":
   try:

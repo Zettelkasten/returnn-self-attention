@@ -183,7 +183,7 @@ def add_lsh_self_attention_layer(
   d, input, output, inside_rec_layer=True, past_only=None, time_axis=None,
   num_heads=8, key_dim=64, value_dim=64, dropout=0.0, num_hashes=14, chunk_size=5, chunks_before=None, chunks_after=None,
   ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
-  mask_current=True, mask_current_value=float(-10**5), mask_different_hashes=True,
+  mask_current=True, mask_current_value=float(-10**5), mask_different_hashes=True, allow_duplicate_attention=False,
   debug_print=False):
   """
   Essentially this does (but for LSH attention)
@@ -216,6 +216,9 @@ def add_lsh_self_attention_layer(
     All other masked values are set to -inf, thus if mask_current_value is something low but higher than -inf, will
     attend to key=query exactly iff it is the only possible key to attend to
   :param bool mask_different_hashes: whether a query may only attend to keys with the same hash
+  :param bool allow_duplicate_attention: whether to mask attention s.t. it only attends to each key once.
+    Attending to a key twice can e.g. happen for multi-round attention,
+    or if the (effective) chunk size is larger than the sequence length.
   :param bool debug_print: will print layers contents for debugging
   """
   if past_only is None:
@@ -482,13 +485,49 @@ def add_lsh_self_attention_layer(
       'kind': 'not_equal'}  # [B,query_chunk_dim?,2*key_window_dim,n]
     masking_layers_from.append(output + '_energy_chunked_mask_valid_key_position')
   if len(masking_layers_from) > 1:
-    d[output + '_energy_chunked_mask'] = {
+    d[output + '_energy_chunked_mask_duplicates'] = {
       'class': 'compare',
       'from': masking_layers_from,
       'kind': 'logical_and'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
   else:
-    d[output + '_energy_chunked_mask'] = {
+    d[output + '_energy_chunked_mask_duplicates'] = {
       'class': 'copy', 'from': masking_layers_from}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n]
+  if not allow_duplicate_attention:
+    # Mask away a key if it already occurred before in the key window,
+    # i.e. keep a key if all keys before are different
+    # Note that we first calculate all normal masking (without handling duplicates),
+    # as we only want to remove the duplicates within the sequence of kept keys
+    d[output + '_key_accum_sort_to_orig_chunked_other'] = {
+      'class': 'name_axis', 'from': [output + '_key_accum_sort_to_orig_chunked'],
+      'axis': 'stag:key-stacked-window', 'description': 'stag:key-stacked-window-other'}  # [query_chunk_dim?,2*key_window_dim',B,n] :: T|rec-history
+    d[output + '_key_accum_sort_to_orig_chunked_range'] = {
+      'class': 'range_in_axis', 'axis': 'stag:key-stacked-window', 'keepdims': False,
+      'from': [output + '_key_accum_sort_to_orig_chunked']}  # [2*key_window_dim]
+    d[output + '_key_accum_sort_to_orig_chunked_other_range'] = {
+      'class': 'range_in_axis', 'axis': 'stag:key-stacked-window-other', 'keepdims': False,
+      'from': [output + '_key_accum_sort_to_orig_chunked_other']}  # [2*key_window_dim']
+    d[output + '_key_accum_sort_to_orig_chunked_compare_mask'] = {
+      'class': 'compare',
+      'from': [output + '_key_accum_sort_to_orig_chunked_range', output + '_key_accum_sort_to_orig_chunked_other_range'],
+      'kind': 'less_equal'}  # [2*key_window_dim,2*key_window_dim']
+    d[output + '_key_accum_sort_to_orig_chunked_compare_unmasked'] = {
+      'class': 'compare',
+      'from': [output + '_key_accum_sort_to_orig_chunked', output + '_key_accum_sort_to_orig_chunked_other'],
+      'kind': 'not_equal'}  # [B,query_chunk_dim?,query_window_dim?,n,2*key_window_dim,2*key_window_dim']
+    d[output + '_key_accum_sort_to_orig_chunked_compare'] = {
+      'class': 'compare',
+      'from': [output + '_key_accum_sort_to_orig_chunked_compare_unmasked', output + '_key_accum_sort_to_orig_chunked_compare_mask'],
+      'kind': 'logical_or'}  # [B,query_chunk_dim?,query_window_dim?,n,2*key_window_dim,2*key_window_dim']
+    d[output + '_energy_chunked_mask_single'] = {
+      'class': 'reduce', 'mode': 'all', 'axis': 'stag:key-stacked-window-other',
+      'from': [output + '_key_accum_sort_to_orig_chunked_compare']}  # [B,query_chunk_dim?,query_window_dim?,n,2*key_window_dim]
+    d[output + '_energy_chunked_mask'] = {
+      'class': 'compare', 'kind': 'logical_and',
+      'from': [output + '_energy_chunked_mask_duplicates', output + '_energy_chunked_mask_single']}  # [B,query_chunk_dim?,query_window_dim?,n,2*key_window_dim]
+  else:
+    d[output + '_energy_chunked_mask'] = {
+      'class': 'copy',
+      'from': [output + '_energy_chunked_mask_duplicates']}  # [B,query_chunk_dim?,query_window_dim?,n,2*key_window_dim]
 
   # Compute energy small mask (i.e. the entries that will be set to mask_current_value)
   small_masking_layers_from = [output + '_energy_chunked_mask_small_invalid_query_position']
@@ -603,7 +642,7 @@ def add_lsh_self_attention_layer(
       '_key_accum_hash_chunked', '_query_hash_chunked', '_kq_accum_sort_to_orig', '_kq_accum_orig_to_sort',
       '_kq_accum_unsorted', '_kq_accum', '_kq_accum_chunked', '_key_accum_chunked', '_query_chunked',
       '_energy_chunked_unmasked', '_energy_chunked_not_small', '_query_sort_to_orig_chunked', '_key_accum_sort_to_orig_chunked',
-      '_energy_chunked_mask', '_energy_chunked_mask_small',
+      '_energy_chunked_mask_duplicates', '_energy_chunked_mask', '_energy_chunked_mask_small',
       '_energy_chunked', '_weights_chunked', '_value_accum_unsorted', '_value_accum', '_value_accum_chunked',
        '_output_chunked', '_output_sorted', '_output', '_att'
     ]] + masking_layers_from + small_masking_layers_from:
