@@ -1,1 +1,4 @@
 .history.*
+tmp*
+dataset_id*
+__pycache__
