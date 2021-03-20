@@ -761,7 +761,7 @@ def add_vanilla_self_attention_layer(
     'dropout': dropout}  # [B,n,T?,T|rec-history]
 
   d[output + '_output'] = {
-    'class': 'dot', 'from': [output + '_weights', output + '_value_accum'],
+    'class': 'dot', 'from': [output + '_weights_drop', output + '_value_accum'],
     'red1': 'stag:rec-history', 'red2': 'stag:rec-history', 'var1': time_axis + '?', 'var2': 'static:-1'}  # [B,n,T?,F|d_v]
   d[output + '_att'] = {
     'class': 'merge_dims', 'axes': 'static',
