@@ -16,18 +16,26 @@ from returnn.tf.layers.basic import *
 from lsh_attention import *
 
 
-def test_lsh_attention_optimize_out():
-  chunk_size, chunks_before, chunks_after = 1, 0, 0
+def _test_lsh_attention_optimize_out(chunk_size, chunks_before, chunks_after, num_hashes=26):
   num_heads, key_dim, value_dim = 2, 3, 3
+  # check_reclayer_optimize_out uses n_time = 7.
   network = {}
   add_lsh_self_attention_layer(
     network, 'data:source', 'att', chunks_before=chunks_before, chunks_after=chunks_after, chunk_size=chunk_size,
-    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=26, inside_rec_layer=True, past_only=True, allow_duplicate_attention=False,
-    time_axis='stag:extern_data:data')
+    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, inside_rec_layer=True,
+    past_only=True, allow_duplicate_attention=False, time_axis='stag:extern_data:data')
 
   check_reclayer_optimize_out(
     {'class': 'copy', 'from': 'att_att', 'n_out': value_dim * num_heads},
     other_subnet_layers=network)
+
+
+def test_lsh_attention_optimize_out():
+  _test_lsh_attention_optimize_out(chunk_size=1, chunks_before=0, chunks_after=0)
+  _test_lsh_attention_optimize_out(chunk_size=7, chunks_before=0, chunks_after=0)
+  _test_lsh_attention_optimize_out(chunk_size=7, chunks_before=0, chunks_after=0, num_hashes=2)
+  _test_lsh_attention_optimize_out(chunk_size=4, chunks_before=1, chunks_after=0)
+  _test_lsh_attention_optimize_out(chunk_size=4, chunks_before=1, chunks_after=0, num_hashes=2)
 
 
 def _test_lsh_self_attention_no_mask_different_hashes(
