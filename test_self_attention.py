@@ -6,7 +6,7 @@ sys.path.insert(1, '/u/petrick/lsh/playground/encoder_lsh')
 from returnn.util import better_exchook
 import unittest
 from pprint import pprint
-from nose.tools import assert_equal, assert_is_instance
+from nose.tools import assert_equal
 from tests.test_TFNetworkLayer import make_scope, make_feed_dict
 from tests.test_TFNetworkRecLayer import check_reclayer_optimize_out
 from returnn.config import Config
@@ -124,6 +124,100 @@ def test_lsh_self_attention_no_mask_different_hashes():
     n_time=13, past_only=True, mask_current=False, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=False)
   _test_lsh_self_attention_no_mask_different_hashes(
     n_time=13, past_only=True, mask_current=True, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=False)
+
+
+def _test_lsh_self_attention_hashing(
+    hash_sequence, chunk_size, chunks_before, chunks_after, past_only=False):
+  """
+  :param np.ndarray hash_sequence: shape [batch, heads, time], dtype int32, with hash classes
+  :return:
+  """
+  # For input position i, set key = value = i-th unit vector.
+  # Distance between all query-key pairs is equal this way.
+  # Set chunk size large enough s.t. only different hash classes will cause pruning.
+  import numpy as np
+  with make_scope() as session:
+    hash_sequence = np.asarray(hash_sequence, dtype='int32')
+    assert len(hash_sequence.shape) == 3
+    n_batch, num_heads, n_time = hash_sequence.shape
+    num_hashes = 42
+    key_dim, value_dim = n_time, n_time
+
+    kqv_sequence = np.zeros((n_batch, n_time, num_heads, key_dim), dtype='float32')
+    for query_t in range(n_time):
+      kqv_sequence[:,query_t,:,query_t] = 1
+
+    net_dict = {"output": {"class": "copy", "from": ["lsh_att"]}}
+    add_lsh_self_attention_layer(
+      net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only, num_heads=num_heads, key_dim=key_dim,
+      value_dim=value_dim, num_hashes=num_hashes, chunk_size=chunk_size, chunks_before=chunks_before,
+      chunks_after=chunks_after,
+      mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False, debug_print=False)
+    # Now we override lsh_kq, lsh_value and lsh_kq_hash with our own inputs
+    def get_kqv_sequence(self, source):
+      assert source(0, as_data=True).shape == (None, num_heads, key_dim)
+      return tf.constant(kqv_sequence)
+    def get_hash_sequence(self, source):
+      assert source(0, as_data=True).shape == (num_heads, None)
+      return tf.constant(hash_sequence)
+    net_dict["lsh_kq_original"], net_dict["lsh_value_original"] = net_dict["lsh_kq"], net_dict["lsh_value"]
+    net_dict["lsh_kq_hash_original"] = net_dict["lsh_kq_hash"]
+    net_dict["lsh_kq"] = {"class": "eval", "from": "lsh_kq_original", "eval": get_kqv_sequence}
+    net_dict["lsh_value"] = {"class": "eval", "from": "lsh_kq_original", "eval": get_kqv_sequence}
+    net_dict["lsh_kq_hash"] = {"class": "eval", "from": "lsh_kq_hash_original", "eval": get_hash_sequence}
+
+    config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
+    config.update(dict(num_inputs=num_heads * key_dim, num_outputs=num_heads * value_dim))
+    network = TFNetwork(config=config, train_flag=True)
+    network.construct_from_dict(net_dict)
+
+    assert_equal(network.get_layer("lsh_kq").output.shape, (None, num_heads, key_dim))  # [B,T,H,F]
+    assert_equal(network.get_layer("lsh_value").output.shape, (None, num_heads, value_dim))  # [B,T,H,F]
+    assert_equal(network.get_layer("lsh_kq_hash").output.shape, (num_heads, None))  # [B,H,T]
+    assert_equal(network.get_layer("lsh_output").output.shape, (num_heads, None, value_dim))  # [B,H,T,F]
+    session.run(tf_compat.v1.global_variables_initializer())
+    feed_dict = {
+      network.extern_data.data["data"].placeholder: np.zeros((n_batch, n_time, num_heads * key_dim)),
+      network.extern_data.data["data"].size_placeholder[0]: [n_time] * n_batch}
+    fetch_output = session.run(
+      network.get_layer("lsh_output").output.placeholder, feed_dict=feed_dict)  # type: np.ndarray
+    assert fetch_output.shape == (n_batch, num_heads, n_time, value_dim)
+
+    for b in range(n_batch):
+      for h in range(num_heads):
+        for query_t in range(n_time):
+          output_vector = fetch_output[b,h,query_t,:]
+          query_hash = hash_sequence[b,h,query_t]
+          matching_keys = [
+            key_t for key_t in range(n_time) if
+            hash_sequence[b,h,key_t] == query_hash
+            and key_t != query_t
+            and (not past_only or key_t <= query_t)]
+          if len(matching_keys) == 0:
+            matching_keys = [query_t]
+          should = np.zeros((value_dim,))
+          for matching_key in matching_keys:
+            should[matching_key] = 1 / len(matching_keys)
+          np.testing.assert_almost_equal(output_vector, should, decimal=5)
+
+
+def _test_lsh_self_attention_hashing_all(hash_sequence, chunk_size, chunks_before, chunks_after):
+  for past_only in [False, True]:
+    _test_lsh_self_attention_hashing(
+      hash_sequence, chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after, past_only=past_only)
+
+
+def test_lsh_self_attention_hashing():
+  _test_lsh_self_attention_hashing_all([[[1,1,1,2,2,2,3,3,3]]], chunk_size=10, chunks_before=0, chunks_after=0)
+  _test_lsh_self_attention_hashing_all([[[1,1,1,2,2,2,3,3,3]]], chunk_size=3, chunks_before=1, chunks_after=1)
+  _test_lsh_self_attention_hashing_all([[[1,1,1,2,2,2,3,3,3]]], chunk_size=3, chunks_before=0, chunks_after=0)
+  _test_lsh_self_attention_hashing_all([[[1,2,3,4,5,6,6,6,7,8,8,8,9]]], chunk_size=15, chunks_before=0, chunks_after=0)
+  _test_lsh_self_attention_hashing_all(
+    [[[1,1,1,2,2,2,3,3,3,4,4,4,4],[1,2,3,4,5,6,6,6,7,8,8,8,9]]], chunk_size=15, chunks_before=0, chunks_after=0)
+  _test_lsh_self_attention_hashing_all(
+    [[[1,1,1,2,2,2,3,3,3,4,4,4,4]],[[1,2,3,4,5,6,6,6,7,8,8,8,9]]], chunk_size=15, chunks_before=0, chunks_after=0)
+  _test_lsh_self_attention_hashing_all([[[2,2,1,1,1]]], chunk_size=3, chunks_before=0, chunks_after=0)
+  _test_lsh_self_attention_hashing_all([[[1,2,3,1,2,3]]], chunk_size=6, chunks_before=0, chunks_after=0)
 
 
 def test_vanilla_self_attention_equal_to_SelfAttentionLayer():
