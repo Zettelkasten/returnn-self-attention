@@ -216,6 +216,7 @@ def _test_lsh_self_attention_hashing_all(hash_sequence, chunk_size, chunks_befor
 
 
 def test_lsh_self_attention_hashing():
+  import numpy as np
   _test_lsh_self_attention_hashing_all([[[1,1,1,2,2,2,3,3,3]]], chunk_size=10, chunks_before=0, chunks_after=0)
   _test_lsh_self_attention_hashing_all([[[1,1,1,2,2,2,3,3,3]]], chunk_size=3, chunks_before=1, chunks_after=1)
   _test_lsh_self_attention_hashing_all([[[1,1,1,2,2,2,3,3,3]]], chunk_size=3, chunks_before=0, chunks_after=0)
@@ -226,6 +227,13 @@ def test_lsh_self_attention_hashing():
     [[[1,1,1,2,2,2,3,3,3,4,4,4,4]],[[1,2,3,4,5,6,6,6,7,8,8,8,9]]], chunk_size=15, chunks_before=0, chunks_after=0)
   _test_lsh_self_attention_hashing_all([[[2,2,1,1,1]]], chunk_size=3, chunks_before=0, chunks_after=0)
   _test_lsh_self_attention_hashing_all([[[1,2,3,1,2,3]]], chunk_size=6, chunks_before=0, chunks_after=0)
+  _test_lsh_self_attention_hashing_all(
+    np.random.randint(low=0, high=30, size=(3,4,13), dtype='int32'), chunk_size=7, chunks_before=1, chunks_after=0)
+
+  # technically, the chunk size is too small. but it is very unlikely that more than 3 keys have the same hash.
+  random_hashes = np.random.randint(low=0, high=26, size=(3,4,34), dtype='int32')
+  _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False)
+  _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=0, past_only=True)
 
 
 def test_vanilla_self_attention_equal_to_SelfAttentionLayer():
