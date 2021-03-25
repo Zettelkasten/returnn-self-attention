@@ -275,56 +275,78 @@ def add_lsh_self_attention_layer(
     'eval': key_to_query_window, 'out_type': key_to_query_window_template,
     'eval_locals': {'chunk_size': chunk_size}}  # [query_window_dim?] :: key_window_dim
 
-  def chunk_kq_accum(layer, pad_value):
+  def chunk_accumulated(layer, pad_value, have_feature_dim=False, mode='kq'):
     """
-    If d[output + '_kq_accum_' + layer] has shape [X,T|rec-history], will add
+    If mode='kq', d[output + '_kq_accum_' + layer] has shape [X,T|rec-history], will add
      - d[layer + '_key_accum_' + layer + '_chunked'] of shape [X,query_chunk_dim?,2*key_window_dim] and
      - d[layer + '_query_' + layer + '_chunked'] of shape [X,query_chunk_dim?,query_window_dim?].
+    If mode='value', d[output + '_value_accum_' + layer] has shape [X,T|rec-history], will add
+    d[output + '_value_' + layer + '_chunked'] of shape [X,query_chunk_dim?,2*key_window_dim].
 
     :param str layer:
     :param float pad_value: for chunking, with which value to pad
+    :param bool have_feature_dim: whether the input has a feature dim axis
+    :param str mode: whether this is for keys and queries ('kq') or for the values 'value'.
     """
+    assert mode in {'kq', 'value'}
+    _layer = '_' + layer if len(layer) > 0 else ''
+    layer_chunked = layer + '_chunked' if len(layer) > 0 else 'chunked'
+    key_name = 'key' if mode == 'kq' else 'value'
     # input is [X,T|rec-history]
-    d[output + '_kq_accum_' + layer + '_chunked_feature'] = {
-      'class': 'split_dims', 'from': [output + '_kq_accum_' + layer], 'pad_value': pad_value,
-      'axis': 'stag:rec-history', 'dims': [-1, chunk_size]}  # [X,key_chunk_dim,key_window_dim]
-    d[output + '_kq_accum_' + layer + '_chunked_unnamed'] = {
-      'class': 'reinterpret_data', 'from': [output + '_kq_accum_' + layer + '_chunked_feature'],
-      'set_axes': {'F': None}}  # [X,key_chunk_dim,key_window_dim]
-    d[output + '_kq_accum_' + layer + '_chunked'] = {
-      'class': 'name_axis', 'axis': ['T', 'T+1'], 'description': ['key-chunk', 'key-window'],
-      'from': [output + '_kq_accum_' + layer + '_chunked_unnamed']}  # [X,key_chunk_dim,key_window_dim]
-    d[output + '_key_accum_' + layer + '_chunked_single'] = {
-      'class': 'copy',
-      'from': [output + '_kq_accum_' + layer + '_chunked']}  # [X,key_chunk_dim,key_window_dim]
+    if have_feature_dim:
+      d[output + '_' + mode + '_accum_' + layer_chunked + '_unnamed'] = {
+        'class': 'split_dims', 'from': [output + '_' + mode + '_accum' + _layer], 'pad_value': pad_value,
+        'axis': 'stag:rec-history', 'dims': [-1, chunk_size]}  # [X,key_chunk_dim,key_window_dim]
+    else:
+      d[output + '_' + mode + '_accum_' + layer_chunked + '_feature'] = {
+        'class': 'split_dims', 'from': [output + '_' + mode + '_accum' + _layer], 'pad_value': pad_value,
+        'axis': 'stag:rec-history', 'dims': [-1, chunk_size]}  # [X,key_chunk_dim,key_window_dim]
+      d[output + '_' + mode + '_accum_' + layer_chunked + '_unnamed'] = {
+        'class': 'reinterpret_data', 'from': [output + '_' + mode + '_accum_' + layer_chunked + '_feature'],
+        'set_axes': {'F': None}}  # [X,key_chunk_dim,key_window_dim]
+    if mode == 'kq':
+      d[output + '_' + mode + '_accum_' + layer_chunked] = {
+        'class': 'name_axis', 'axis': ['T', 'T+1'], 'description': ['key-chunk', 'key-window'],
+        'from': [output + '_' + mode + '_accum_' + layer_chunked + '_unnamed']}  # [X,key_chunk_dim,key_window_dim]
+      d[output + '_' + key_name + '_accum_' + layer_chunked + '_single'] = {
+        'class': 'copy',
+        'from': [output + '_' + mode + '_accum_' + layer_chunked]}  # [X,key_chunk_dim,key_window_dim]
+    else:
+      d[output + '_' + mode + '_accum_' + layer_chunked + '_single'] = {
+        'class': 'name_axis', 'axis': ['T', 'T+1'], 'description': ['key-chunk', 'key-window'],
+        'from': [output + '_' + mode + '_accum_' + layer_chunked + '_unnamed']}  # [X,key_chunk_dim,key_window_dim]
     for stack_offset in chunk_stack_offsets_before + chunk_stack_offsets_after:
-      d[output + '_key_accum_' + layer + '_chunked_offset%s' % stack_offset] = {
+      d[output + '_' + key_name + '_accum_' + layer_chunked + '_offset%s' % stack_offset] = {
         'class': 'eval',
-        'from': [output + '_key_accum_' + layer + '_chunked_single'],
+        'from': [output + '_' + key_name + '_accum_' + layer_chunked + '_single'],
         'eval': 'tf.roll(source(0), shift=-chunk_offset, axis=source(0, as_data=True).get_axis_from_description("stag:key-chunk"))',
         'eval_locals': {'chunk_offset': stack_offset}}  # [X,key_chunk_dim,key_window_dim]
-    d[output + '_key_accum_' + layer + '_chunked_stacked_split'] = {
+    d[output + '_' + key_name + '_accum_' + layer_chunked + '_stacked_split'] = {
       'class': 'stack',
       'from': (
-          [output + '_key_accum_' + layer + '_chunked_offset%s' % i for i in chunk_stack_offsets_before]
-          + [output + '_key_accum_' + layer + '_chunked_single']
-          + [output + '_key_accum_' + layer + '_chunked_offset%s' % i for i in
+          [output + '_' + key_name + '_accum_' + layer_chunked + '_offset%s' % i for i in chunk_stack_offsets_before]
+          + [output + '_' + key_name + '_accum_' + layer_chunked + '_single']
+          + [output + '_' + key_name + '_accum_' + layer_chunked + '_offset%s' % i for i in
             chunk_stack_offsets_after])}  # [X,key_chunk_dim,key_window_dim,chunk_stack_dim]
-    d[output + '_key_accum_' + layer + '_chunked_stacked_unnamed'] = {
+    d[output + '_' + key_name + '_accum_' + layer_chunked + '_stacked_unnamed'] = {
       'class': 'merge_dims', 'axes': ['stag:key-window', 'spatial:-1'],
-      'from': [output + '_key_accum_' + layer + '_chunked_stacked_split']}  # [X,key_chunk_dim,2*key_window_dim]
-    d[output + '_key_accum_' + layer + '_chunked_stacked'] = {
+      'from': [
+        output + '_' + key_name + '_accum_' + layer_chunked + '_stacked_split']}  # [X,key_chunk_dim,2*key_window_dim]
+    d[output + '_' + key_name + '_accum_' + layer_chunked + '_stacked'] = {
       'class': 'name_axis', 'axis': ['T+1'], 'description': ['key-stacked-window'],
-      'from': [output + '_key_accum_' + layer + '_chunked_stacked_unnamed']}  # [X,key_chunk_dim,2*key_window_dim]
-    d[output + '_key_accum_' + layer + '_chunked'] = {
-      'class': 'gather', 'from': [output + '_key_accum_' + layer + '_chunked_stacked'], 'axis': 'stag:key-chunk',
+      'from': [
+        output + '_' + key_name + '_accum_' + layer_chunked + '_stacked_unnamed']}  # [X,key_chunk_dim,2*key_window_dim]
+    d[output + '_' + key_name + '_accum_' + layer_chunked] = {
+      'class': 'gather', 'from': [output + '_' + key_name + '_accum_' + layer_chunked + '_stacked'],
+      'axis': 'stag:key-chunk',
       'position': output + '_sort_key_to_query_chunk'}  # [X,query_chunk_dim?,2*key_window_dim]
-    d[output + '_query_' + layer + '_chunked_all'] = {
-      'class': 'gather', 'from': [output + '_kq_accum_' + layer + '_chunked'],
-      'axis': 'stag:key-chunk', 'position': output + '_sort_key_to_query_chunk'}  # [X,query_chunk_dim?,key_window_dim]
-    d[output + '_query_' + layer + '_chunked'] = {
-      'class': 'gather', 'from': [output + '_query_' + layer + '_chunked_all'], 'axis': 'stag:key-window',
-      'position': output + '_sort_key_to_query_window'}  # [X,query_chunk_dim?,query_window_dim?]
+    if mode == 'kq':
+      d[output + '_query_' + layer_chunked + '_all'] = {
+        'class': 'gather', 'from': [output + '_' + mode + '_accum_' + layer_chunked], 'axis': 'stag:key-chunk',
+        'position': output + '_sort_key_to_query_chunk'}  # [X,query_chunk_dim?,key_window_dim]
+      d[output + '_query_' + layer_chunked] = {
+        'class': 'gather', 'from': [output + '_query_' + layer_chunked + '_all'], 'axis': 'stag:key-window',
+        'position': output + '_sort_key_to_query_window'}  # [X,query_chunk_dim?,query_window_dim?]
 
   # Hash the key/query
   assert num_hashes % 2 == 0
@@ -366,14 +388,14 @@ def add_lsh_self_attention_layer(
     'class': 'eval',
     'eval': 'tf.argsort(source(0), axis=source(0, as_data=True).get_axis_from_description("stag:rec-history"), direction="ASCENDING", stable=True)',
     'from': [output + '_kq_accum_hash_unsorted']}  # [B,T|rec-history,n] :: T|rec-history
-  chunk_kq_accum('sort_to_orig', pad_value=hash_mask_value)
+  chunk_accumulated('sort_to_orig', pad_value=hash_mask_value)
 
   # Sort the hashes themselves
   d[output + '_kq_accum_hash'] = {
     'class': 'gather', 'from': [output + '_kq_accum_hash_unsorted'],
     'axis': 'stag:rec-history',
     'position': output + '_kq_accum_sort_to_orig'}  # [B,T|rec-history,n] :: d_h
-  chunk_kq_accum('hash', pad_value=hash_mask_value)
+  chunk_accumulated('hash', pad_value=hash_mask_value)
 
   # Invert permutation to undo sorting later
   d[output + '_kq_accum_orig_indices'] = {
@@ -391,51 +413,14 @@ def add_lsh_self_attention_layer(
     'class': 'gather', 'from': [output + '_kq_accum_unsorted'],
     'axis': 'stag:rec-history',
     'position': output + '_kq_accum_sort_to_orig'}  # [B,T|rec-history,n,F|d_k]
-  d[output + '_kq_accum_chunked_unnamed'] = {
-    'class': 'split_dims', 'from': [output + '_kq_accum'],
-    'axis': 'stag:rec-history',
-    'dims': [-1, chunk_size]}  # [key_chunk_dim,key_window_dim,B,n,F|d_k]
-  d[output + '_kq_accum_chunked'] = {
-    'class': 'name_axis', 'axis': ['T', 'T+1'], 'description': ['key-chunk', 'key-window'],
-    'from': [output + '_kq_accum_chunked_unnamed']}  # [key_chunk_dim,key_window_dim,B,n,F|d_k]
 
-  # Compute attention keys
+  # Compute attention keys and queries
+  chunk_accumulated('', pad_value=0, have_feature_dim=True, mode='kq')
+  # Override that attention keys are set to normalized attention queries
   d[output + '_key_accum_chunked_single'] = {
     'class': 'eval',
     'eval': normalize_eval,
     'from': [output + '_kq_accum_chunked']}  # [key_chunk_dim,key_window_dim,B,n,F|d_k]
-  for stack_offset in chunk_stack_offsets_before + chunk_stack_offsets_after:
-    d[output + '_key_accum_chunked_offset%s' % stack_offset] = {
-      'class': 'eval',
-      'from': [output + '_key_accum_chunked_single'],
-      'eval': 'tf.roll(source(0), shift=-chunk_offset, axis=source(0, as_data=True).get_axis_from_description("stag:key-chunk"))',
-      'eval_locals': {'chunk_offset': stack_offset}}  # [key_chunk_dim,key_window_dim,B,n,F|d_k]
-  d[output + '_key_accum_chunked_stacked_split'] = {
-    'class': 'stack',
-    'from': (
-        [output + '_key_accum_chunked_offset%s' % i for i in chunk_stack_offsets_before]
-        + [output + '_key_accum_chunked_single']
-        + [output + '_key_accum_chunked_offset%s' % i for i in chunk_stack_offsets_after])}  # [key_chunk_dim,key_window_dim,chunk_stack_dim,B,n,F|d_k]
-  d[output + '_key_accum_chunked_stacked_unnamed'] = {
-    'class': 'merge_dims', 'axes': ['stag:key-window', 'spatial:-1'],
-    'from': [output + '_key_accum_chunked_stacked_split']}  # [key_chunk_dim,2*key_window_dim,B,n,F|d_k]
-  d[output + '_key_accum_chunked_stacked'] = {
-    'class': 'name_axis', 'axis': ['T+1'], 'description': ['key-stacked-window'],
-    'from': [output + '_key_accum_chunked_stacked_unnamed']}  # [key_chunk_dim,2*key_window_dim,B,n,F|d_k]
-  d[output + '_key_accum_chunked'] = {
-    'class': 'gather', 'from': [output + '_key_accum_chunked_stacked'],
-    'axis': 'stag:key-chunk',
-    'position': output + '_sort_key_to_query_chunk'}  # [query_chunk_dim?,2*key_window_dim,B,n,F|d_k]
-
-  # Compute attention queries
-  d[output + '_query_chunked_all'] = {
-    'class': 'gather', 'from': [output + '_kq_accum_chunked'],
-    'axis': 'stag:key-chunk',
-    'position': output + '_sort_key_to_query_chunk'}  # [query_chunk_dim?,key_window_dim,B,n,F|d_k]
-  d[output + '_query_chunked'] = {
-    'class': 'gather', 'from': [output + '_query_chunked_all'],
-    'axis': 'stag:key-window',
-    'position': output + '_sort_key_to_query_window'}  # [query_chunk_dim?,query_window_dim?,B,n,F|d_k]
 
   # Compute energy mask
   masking_layers_from = []
@@ -561,35 +546,7 @@ def add_lsh_self_attention_layer(
     'class': 'gather', 'from': [output + '_value_accum_unsorted'],
     'axis': 'stag:rec-history',
     'position': output + '_kq_accum_sort_to_orig'}  # [B,T|rec-history,n,F|d_v]
-  d[output + '_value_accum_chunked_unnamed'] = {
-    'class': 'split_dims', 'from': [output + '_value_accum'],
-    'axis': 'stag:rec-history',
-    'dims': [-1, chunk_size]}  # [key_chunk_dim,key_window_dim,B,n,F|d_v]
-  d[output + '_value_accum_chunked_single'] = {
-    'class': 'name_axis', 'axis': ['T', 'T+1'], 'description': ['key-chunk', 'key-window'],
-    'from': [output + '_value_accum_chunked_unnamed']}  # [key_chunk_dim,key_window_dim,B,n,F|d_v]
-  for stack_offset in chunk_stack_offsets_before + chunk_stack_offsets_after:
-    d[output + '_value_accum_chunked_offset%s' % stack_offset] = {
-      'class': 'eval',
-      'from': [output + '_value_accum_chunked_single'],
-      'eval': 'tf.roll(source(0), shift=-chunk_offset, axis=source(0, as_data=True).get_axis_from_description("stag:key-chunk"))',
-      'eval_locals': {'chunk_offset': stack_offset}}  # [key_chunk_dim,key_window_dim,B,n,F|d_v]
-  d[output + '_value_accum_chunked_stacked_split'] = {
-    'class': 'stack',
-    'from': (
-        [output + '_value_accum_chunked_offset%s' % i for i in chunk_stack_offsets_before]
-        + [output + '_value_accum_chunked_single']
-        + [output + '_value_accum_chunked_offset%s' % i for i in chunk_stack_offsets_after])}  # [key_chunk_dim,key_window_dim,chunk_stack_dim,B,n,F|d_v]
-  d[output + '_value_accum_chunked_stacked_unnamed'] = {
-    'class': 'merge_dims', 'axes': ['stag:key-window', 'spatial:-1'],
-    'from': [output + '_value_accum_chunked_stacked_split']}  # [key_chunk_dim,2*key_window_dim,B,n,F|d_v]
-  d[output + '_value_accum_chunked_stacked'] = {
-    'class': 'name_axis', 'axis': ['T+1'], 'description': ['key-stacked-window'],
-    'from': [output + '_value_accum_chunked_stacked_unnamed']}  # [key_chunk_dim,2*key_window_dim,B,n,F|d_v]
-  d[output + '_value_accum_chunked'] = {
-    'class': 'gather', 'from': [output + '_value_accum_chunked_stacked'],
-    'axis': 'stag:key-chunk',
-    'position': output + '_sort_key_to_query_chunk'}  # [query_chunk_dim?,2*key_window_dim,B,n,F|d_v]
+  chunk_accumulated('', pad_value=0, have_feature_dim=True, mode='value')
 
   # Compute the outputted weighted sum (i.e. the context vector)
   d[output + '_output_chunked'] = {
