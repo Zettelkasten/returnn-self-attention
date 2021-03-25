@@ -567,15 +567,27 @@ def add_lsh_self_attention_layer(
       output + '_weights_chunked_drop',
       output + '_value_accum_chunked']}  # [B,query_chunk_dim?,query_window_dim?,n,r,F|d_v]
   d[output + '_round_output_sorted'] = {
-    'class': 'merge_dims',
-    'axes': ['stag:query-chunk?', 'stag:query-window?'],
+    'class': 'merge_dims', 'axes': ['stag:query-chunk?', 'stag:query-window?'],
     'from': [output + '_round_output_chunked']}  # [B,query_chunk_dim?*query_window_dim?,n,r,F|d_v]
   d[output + '_round_output'] = {
     'class': 'eval', 'from': [output + '_round_output_sorted', output + '_kq_accum_orig_to_sort', output + '_value'],
-    'eval': maybe_gather, 'out_type': maybe_gather_template}  # [B,T|classes?,n,r,F|d_k]
-  assert num_rounds == 1, 'multiple hash rounds not implemented yet.'
+    'eval': maybe_gather, 'out_type': maybe_gather_template}  # [B,T|classes?,n,r,F|d_v]
+  d[output + '_energy_logsumexp_sorted'] = {
+    'class': 'merge_dims', 'axes': ['stag:query-chunk?', 'stag:query-window?'],
+    'from': [output + '_energy_chunked_logsumexp']}  # [B,query_chunk_dim?*query_window_dim?,n,r]
+  d[output + '_energy_logsumexp'] = {
+    'class': 'eval',
+    'from': [output + '_energy_logsumexp_sorted', output + '_kq_accum_orig_to_sort', output + '_value'],
+    'eval': maybe_gather, 'out_type': maybe_gather_template}  # [B,T|classes?,n,r]
+  d[output + '_round_output_weights'] = {
+    'class': 'softmax_over_spatial', 'axis': 'stag:att-rounds', 'use_time_mask': False, 'energy_factor': 1.0,
+    'from': [output + '_energy_logsumexp']}  # [B,T|classes?,n,r]
+  d[output + '_round_output_weighted'] = {
+    'class': 'combine', 'kind': 'mul',
+    'from': [output + '_round_output_weights', output + '_round_output']}  # [B,T|classes?,n,F|d_v]
   d[output + '_output'] = {
-    'class': 'squeeze', 'from': [output + '_round_output'], 'axis': 'stag:att-round'}  # [B,T|classes?,n,F|d_k]
+    'class': 'reduce', 'axis': 'stag:att-rounds', 'mode': 'sum',
+    'from': [output + '_round_output_weighted']}  # [B,T|classes?,n,F|d_v]
   d[output + '_output_unnamed'] = {
     'class': 'name_axis', 'axis': 'stag:att-heads', 'description': None,
     'from': [output + '_output']}  # [B,T|classes?,F|n*d_v]
