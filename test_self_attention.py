@@ -27,7 +27,7 @@ def _test_lsh_attention_optimize_out(chunk_size, chunks_before, chunks_after, nu
 
   check_reclayer_optimize_out(
     {'class': 'copy', 'from': 'att_att', 'n_out': value_dim * num_heads},
-    other_subnet_layers=network)
+    other_subnet_layers=network, rtol=2*1e-3)
 
 
 def test_lsh_attention_optimize_out():

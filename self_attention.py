@@ -533,14 +533,19 @@ def add_lsh_self_attention_layer(
     'class': 'switch', 'condition': output + '_energy_chunked_mask',
     'true_from': output + '_energy_chunked_unmasked',
     'false_from': float('-inf')}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
-  d[output + '_energy_chunked'] = {
+  d[output + '_energy_chunked_unscaled'] = {
     'class': 'switch', 'condition': output + '_energy_chunked_mask_small',
     'true_from': mask_current_value,
     'false_from': output + '_energy_chunked_not_small'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
+  d[output + '_energy_chunked'] = {
+    'class': 'eval', 'eval': '%s * source(0)' % (key_dim ** -0.5),
+    'from': [output + '_energy_chunked_unscaled']}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
+  d[output + '_energy_chunked_logsumexp'] = {
+    'class': 'reduce', 'mode': 'logsumexp', 'axis': 'stag:key-stacked-window',
+    'from': [output + '_energy_chunked']}  # [B,query_chunk_dim?,query_window_dim?,n,r]
   d[output + '_weights_chunked'] = {
-    'class': 'softmax_over_spatial', 'axis': 'stag:key-stacked-window',
-    'use_time_mask': False, 'energy_factor': key_dim ** -0.5,
-    'from': [output + '_energy_chunked']}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
+    'class': 'eval', 'from': [output + '_energy_chunked', output + '_energy_chunked_logsumexp'],
+    'eval': 'tf.exp(source(0) - source(1))'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
   d[output + '_weights_chunked_drop'] = {
     'class': 'dropout', 'dropout_noise_shape': {'*': None}, 'from': [output + '_weights_chunked'],
     'dropout': dropout}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
