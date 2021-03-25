@@ -194,6 +194,11 @@ def _test_lsh_self_attention_hashing(
       network.get_layer("lsh_output").output.placeholder, feed_dict=feed_dict)  # type: np.ndarray
     assert fetch_output.shape == (n_batch, num_heads, n_time, value_dim)
 
+    with np.printoptions(precision=2, suppress=True):
+      print('input hash vector [B,H,R,T]:')
+      pprint(hash_sequence)
+      print('output context vector [B,H,R,T,F] (with past_only=%s):' % past_only)
+      pprint(fetch_output)
     for b in range(n_batch):
       for h in range(num_heads):
         for query_t in range(n_time):
@@ -201,7 +206,7 @@ def _test_lsh_self_attention_hashing(
           query_hash = hash_sequence[b,h,:,query_t]  # [R]
           matching_keys = [
             key_t for key_t in range(n_time) if
-            any(hash_sequence[b,h,r,key_t] == query_hash for r in range(num_rounds))
+            any(hash_sequence[b,h,r,key_t] == query_hash[r] for r in range(num_rounds))
             and key_t != query_t
             and (not past_only or key_t <= query_t)]
           if len(matching_keys) == 0:
@@ -210,6 +215,7 @@ def _test_lsh_self_attention_hashing(
           for matching_key in matching_keys:
             should[matching_key] = 1 / len(matching_keys)
           np.testing.assert_almost_equal(output_vector, should, decimal=5)
+    print('Matches!')
 
 
 def _test_lsh_self_attention_hashing_all(hash_sequence, chunk_size, chunks_before, chunks_after):
@@ -239,6 +245,17 @@ def test_lsh_self_attention_hashing():
   random_hashes = np.random.randint(low=0, high=26, size=(3,4,34), dtype='int32')
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False)
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=0, past_only=True)
+
+
+def test_lsh_self_attention_hashing_multi_round():
+  # hash rounds do not help here, as the hash classes for all rounds are equal
+  _test_lsh_self_attention_hashing_all(
+    [[[[1,1,1,2,2,2,3,3,3], [2,2,2,3,3,3,4,4,4]]]], chunk_size=10, chunks_before=0, chunks_after=0)
+  _test_lsh_self_attention_hashing_all(
+    [[[[1,1,1,2,2,2,3,3,3], [4,4,4,2,2,2,3,3,3]]]], chunk_size=10, chunks_before=0, chunks_after=0)
+  # hash rounds should now increase the effective window, but keys of different hash rounds are disjoint.
+  _test_lsh_self_attention_hashing_all(
+    [[[[1,1,1,2,2,2,3,3,3], [1,2,3,4,1,2,3,4,5]]]], chunk_size=10, chunks_before=0, chunks_after=0)
 
 
 def test_vanilla_self_attention_equal_to_SelfAttentionLayer():
