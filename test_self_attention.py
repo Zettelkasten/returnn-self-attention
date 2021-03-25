@@ -59,7 +59,7 @@ def _test_lsh_self_attention_no_mask_different_hashes(
       net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only,
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
       chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
-      mask_current=mask_current, mask_different_hashes=False, allow_duplicate_attention=duplicates, debug_print=True)
+      mask_current=mask_current, mask_different_hashes=False, allow_duplicate_attention=duplicates)
     add_vanilla_self_attention_layer(
       net_dict, 'data', 'vanilla', inside_rec_layer=False, past_only=past_only,
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, share_key_query=True,
@@ -137,7 +137,7 @@ def test_lsh_self_attention_no_mask_different_hashes():
 def _test_lsh_self_attention_hashing(
     hash_sequence, chunk_size, chunks_before, chunks_after, past_only=False):
   """
-  :param np.ndarray hash_sequence: shape [batch, heads, time], dtype int32, with hash classes
+  :param np.ndarray hash_sequence: shape [batch, heads, rounds, time], dtype int32, with hash classes
   :return:
   """
   # For input position i, set key = value = i-th unit vector.
@@ -146,8 +146,11 @@ def _test_lsh_self_attention_hashing(
   import numpy as np
   with make_scope() as session:
     hash_sequence = np.asarray(hash_sequence, dtype='int32')
-    assert len(hash_sequence.shape) == 3
-    n_batch, num_heads, n_time = hash_sequence.shape
+    if len(hash_sequence.shape) == 3:
+      # hash_sequence is [batch, heads, time]
+      hash_sequence = np.reshape(hash_sequence, hash_sequence.shape[:2] + (1,) + hash_sequence.shape[2:])
+    assert len(hash_sequence.shape) == 4
+    n_batch, num_heads, num_rounds, n_time = hash_sequence.shape
     num_hashes = 42
     key_dim, value_dim = n_time, n_time
 
@@ -157,8 +160,8 @@ def _test_lsh_self_attention_hashing(
 
     net_dict = {"output": {"class": "copy", "from": ["lsh_att"]}}
     add_lsh_self_attention_layer(
-      net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only, num_heads=num_heads, key_dim=key_dim,
-      value_dim=value_dim, num_hashes=num_hashes, chunk_size=chunk_size, chunks_before=chunks_before,
+      net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only, num_heads=num_heads, num_rounds=num_rounds,
+      key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, chunk_size=chunk_size, chunks_before=chunks_before,
       chunks_after=chunks_after,
       mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False, debug_print=False)
     # Now we override lsh_kq, lsh_value and lsh_kq_hash with our own inputs
@@ -166,7 +169,7 @@ def _test_lsh_self_attention_hashing(
       assert source(0, as_data=True).shape == (None, num_heads, key_dim)
       return tf.constant(kqv_sequence)
     def get_hash_sequence(self, source):
-      assert source(0, as_data=True).shape == (num_heads, None)
+      assert source(0, as_data=True).shape == (num_heads, num_rounds, None)
       return tf.constant(hash_sequence)
     net_dict["lsh_kq_original"], net_dict["lsh_value_original"] = net_dict["lsh_kq"], net_dict["lsh_value"]
     net_dict["lsh_kq_hash_original"] = net_dict["lsh_kq_hash"]
@@ -181,7 +184,7 @@ def _test_lsh_self_attention_hashing(
 
     assert_equal(network.get_layer("lsh_kq").output.shape, (None, num_heads, key_dim))  # [B,T,H,F]
     assert_equal(network.get_layer("lsh_value").output.shape, (None, num_heads, value_dim))  # [B,T,H,F]
-    assert_equal(network.get_layer("lsh_kq_hash").output.shape, (num_heads, None))  # [B,H,T]
+    assert_equal(network.get_layer("lsh_kq_hash").output.shape, (num_heads, num_rounds, None))  # [B,H,R,T]
     assert_equal(network.get_layer("lsh_output").output.shape, (num_heads, None, value_dim))  # [B,H,T,F]
     session.run(tf_compat.v1.global_variables_initializer())
     feed_dict = {
@@ -195,10 +198,10 @@ def _test_lsh_self_attention_hashing(
       for h in range(num_heads):
         for query_t in range(n_time):
           output_vector = fetch_output[b,h,query_t,:]
-          query_hash = hash_sequence[b,h,query_t]
+          query_hash = hash_sequence[b,h,:,query_t]  # [R]
           matching_keys = [
             key_t for key_t in range(n_time) if
-            hash_sequence[b,h,key_t] == query_hash
+            any(hash_sequence[b,h,r,key_t] == query_hash for r in range(num_rounds))
             and key_t != query_t
             and (not past_only or key_t <= query_t)]
           if len(matching_keys) == 0:
