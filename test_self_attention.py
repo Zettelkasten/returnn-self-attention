@@ -27,7 +27,7 @@ def _test_lsh_attention_optimize_out(chunk_size, chunks_before, chunks_after, nu
 
   check_reclayer_optimize_out(
     {'class': 'copy', 'from': 'att_att', 'n_out': value_dim * num_heads},
-    other_subnet_layers=network, rtol=2*1e-3)
+    other_subnet_layers=network, rtol=3*1e-3)
 
 
 def test_lsh_attention_optimize_out():
@@ -59,7 +59,7 @@ def _test_lsh_self_attention_no_mask_different_hashes(
       net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only,
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
       chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
-      mask_current=mask_current, mask_different_hashes=False, allow_duplicate_attention=duplicates)
+      mask_current=mask_current, mask_different_hashes=False, allow_duplicate_attention=duplicates, debug_print=True)
     add_vanilla_self_attention_layer(
       net_dict, 'data', 'vanilla', inside_rec_layer=False, past_only=past_only,
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, share_key_query=True,
@@ -95,9 +95,9 @@ def _test_lsh_self_attention_no_mask_different_hashes(
     vanilla = vanilla * mask
     lsh = lsh * mask
     print('seq lengths:', sizes)
-    print('vanilla:  - ', vanilla_out)
+    print('vanilla out:  - ', vanilla_out)
     pprint(vanilla)
-    print('lsh:  -', lsh_out)
+    print('lsh out:  -', lsh_out)
     pprint(lsh)
     numpy.testing.assert_almost_equal(vanilla, lsh, decimal=5)
     print('They are equal!')
@@ -113,6 +113,8 @@ def test_lsh_self_attention_no_mask_different_hashes():
   _test_lsh_self_attention_no_mask_different_hashes(
     n_time=13, past_only=True, mask_current=True, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=True)
 
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=6, past_only=False, mask_current=False, chunk_size=4, chunks_before=1, chunks_after=0, duplicates=False, num_heads=1)
   _test_lsh_self_attention_no_mask_different_hashes(
     n_time=2, past_only=False, mask_current=False, chunk_size=1, chunks_before=2, chunks_after=0, duplicates=False, n_batch=1, num_heads=1)
   _test_lsh_self_attention_no_mask_different_hashes(
@@ -145,6 +147,8 @@ def _test_lsh_self_attention_hashing(
   # Set chunk size large enough s.t. only different hash classes will cause pruning.
   import numpy as np
   with make_scope() as session:
+    print(
+      '------ Testing with chunk_size =', chunk_size, 'chunks_before =', chunks_before, 'chunks_after =', chunks_after)
     hash_sequence = np.asarray(hash_sequence, dtype='int32')
     if len(hash_sequence.shape) == 3:
       # hash_sequence is [batch, heads, time]
@@ -163,7 +167,7 @@ def _test_lsh_self_attention_hashing(
       net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only, num_heads=num_heads, num_rounds=num_rounds,
       key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, chunk_size=chunk_size, chunks_before=chunks_before,
       chunks_after=chunks_after,
-      mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False, debug_print=False)
+      mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False)
     # Now we override lsh_kq, lsh_value and lsh_kq_hash with our own inputs
     def get_kqv_sequence(self, source):
       assert source(0, as_data=True).shape == (None, num_heads, key_dim)
@@ -236,13 +240,16 @@ def test_lsh_self_attention_hashing():
     [[[1,1,1,2,2,2,3,3,3,4,4,4,4]],[[1,2,3,4,5,6,6,6,7,8,8,8,9]]], chunk_size=15, chunks_before=0, chunks_after=0)
   _test_lsh_self_attention_hashing_all([[[2,2,1,1,1]]], chunk_size=3, chunks_before=0, chunks_after=0)
   _test_lsh_self_attention_hashing_all([[[1,2,3,1,2,3]]], chunk_size=6, chunks_before=0, chunks_after=0)
+
   np.random.seed(0)
   _test_lsh_self_attention_hashing_all(
-    np.random.randint(low=0, high=30, size=(3,4,13), dtype='int32'), chunk_size=7, chunks_before=1, chunks_after=0)
-
+    np.random.randint(low=0, high=2, size=(1,1,1,5), dtype='int32'), chunk_size=3, chunks_before=1, chunks_after=0)
+  np.random.seed(0)
+  _test_lsh_self_attention_hashing_all(
+    np.random.randint(low=0, high=30, size=(3,4,1,13), dtype='int32'), chunk_size=7, chunks_before=1, chunks_after=0)
   # technically, the chunk size is too small. but it is very unlikely that more than 3 keys have the same hash.
   np.random.seed(0)
-  random_hashes = np.random.randint(low=0, high=26, size=(3,4,34), dtype='int32')
+  random_hashes = np.random.randint(low=0, high=26, size=(3,4,1,34), dtype='int32')
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False)
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=0, past_only=True)
 
@@ -256,6 +263,25 @@ def test_lsh_self_attention_hashing_multi_round():
   # hash rounds should now increase the effective window, but keys of different hash rounds are disjoint.
   _test_lsh_self_attention_hashing_all(
     [[[[1,1,1,2,2,2,3,3,3], [1,2,3,4,1,2,3,4,5]]]], chunk_size=10, chunks_before=0, chunks_after=0)
+  # hash rounds increase the effective window, but also select keys twice some times.
+  _test_lsh_self_attention_hashing_all(
+    [[[[1,2,2,2], [5,5,5,6]]]], chunk_size=4, chunks_before=0, chunks_after=0)
+  _test_lsh_self_attention_hashing_all(
+    [[[[1,1,1,2,2,2,3,3,3], [1,1,2,2,3,3,4,4,5]]]], chunk_size=10, chunks_before=0, chunks_after=0)
+  # now try a bigger test
+  import numpy as np
+  np.random.seed(0)
+  _test_lsh_self_attention_hashing_all(
+    np.random.randint(low=0, high=2, size=(1,1,3,5), dtype='int32'), chunk_size=3, chunks_before=1, chunks_after=0)
+  np.random.seed(0)
+  _test_lsh_self_attention_hashing_all(
+    np.random.randint(low=0, high=30, size=(3,4,5,13), dtype='int32'), chunk_size=7, chunks_before=1, chunks_after=0)
+  # technically, the chunk size is too small. but it is very unlikely that more than 5 keys have the same hash.
+  # (even for eight hash rounds). Also see test_lsh_self_attention_hashing, where we use a little bit lower count.
+  np.random.seed(0)
+  random_hashes = np.random.randint(low=0, high=26, size=(3,4,8,34), dtype='int32')
+  _test_lsh_self_attention_hashing(random_hashes, chunk_size=5, chunks_before=1, chunks_after=1, past_only=False)
+  _test_lsh_self_attention_hashing(random_hashes, chunk_size=5, chunks_before=1, chunks_after=0, past_only=True)
 
 
 def test_vanilla_self_attention_equal_to_SelfAttentionLayer():
