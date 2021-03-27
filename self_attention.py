@@ -521,14 +521,12 @@ def add_lsh_self_attention_layer(
     d[output + '_query_duplicates_sorted_compare_float'] = {
       'class': 'cast', 'from': [output + '_query_duplicates_sorted_compare'],
       'dtype': 'float32'}  # [B,n,T|classes?,r,2*key_window_dim,r',2*key_window_dim']
-    d[output + '_query_duplicates_sorted_no_time'] = {
+    d[output + '_query_duplicates_sorted'] = {
       'class': 'reduce', 'mode': 'sum', 'from': [output + '_query_duplicates_sorted_compare_float'],
       'axes': ['stag:att-round-other', 'stag:key-stacked-window-other']}  # [B,n,r,T|classes?,2*key_window_dim]
-    d[output + '_query_duplicates_sorted'] = {
-      'class': 'reinterpret_data', 'from': [output + '_query_duplicates_sorted_no_time'],
-      'set_axes': {'T': time_axis}}  # [B,n,r,T|classes?,2*key_window_dim]
     d[output + '_query_accum_duplicates_sorted'] = {
-      'class': 'cum_concat', 'from': [output + '_query_duplicates_sorted']}  # [B,n,r,T|rec-history,2*key_window_dim]
+      'class': 'cum_concat', 'axis': time_axis,
+      'from': [output + '_query_duplicates_sorted']}  # [B,n,r,T|rec-history,2*key_window_dim]
     d[output + '_query_accum_duplicates'] = {
       'class': 'gather', 'from': [output + '_query_accum_duplicates_sorted'], 'axis': 'stag:rec-history',
       'position': output + '_kq_accum_sort_to_orig'}  # [B,n,r,T|rec-history,2*key_window_dim]
@@ -577,7 +575,7 @@ def add_lsh_self_attention_layer(
       'class': 'eval',
       'from': [output + '_energy_chunked_unmasked_duplicates', output + '_query_duplicates_chunked'],
       'eval': 'source(0) - tf.math.log(source(1) + 1e-9)'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]  # noqa
-  d[output + '_energy_chunked_not_small'] = {
+  d[output + '_energy_chunked_not_small'] = {  # broken!! has weird time dim
     'class': 'switch', 'condition': output + '_energy_chunked_mask',
     'true_from': output + '_energy_chunked_unmasked',
     'false_from': float('-inf')}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
