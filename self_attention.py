@@ -446,12 +446,14 @@ def add_lsh_self_attention_layer(
 
   # Compute energy mask
   masking_layers_from = []
+  masking_layers_have_query_window = False
   if past_only:
     d[output + '_energy_chunked_mask_past_only'] = {
       'class': 'compare',
       'from': [output + '_query_sort_to_orig_chunked', output + '_key_accum_sort_to_orig_chunked'],
       'kind': 'greater_equal'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
     masking_layers_from.append(output + '_energy_chunked_mask_past_only')
+    masking_layers_have_query_window = True
   if mask_different_hashes:
     # Masking valid positions is not necessary in this case as invalid positions will be masked with a special
     # hash value
@@ -460,6 +462,7 @@ def add_lsh_self_attention_layer(
       'from': [output + '_query_hash_chunked', output + '_key_accum_hash_chunked'],
       'kind': 'equal'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
     masking_layers_from.append(output + '_energy_chunked_mask_matching_hash')
+    masking_layers_have_query_window = True
   else:
     d[output + '_energy_chunked_mask_valid_key_position'] = {
       'class': 'compare',
@@ -470,32 +473,35 @@ def add_lsh_self_attention_layer(
     d[output + '_energy_chunked_mask'] = {
       'class': 'compare',
       'from': masking_layers_from,
-      'kind': 'logical_and'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
+      'kind': 'logical_and'}  # [B,query_chunk_dim?,[query_window_dim?]?,2*key_window_dim,n,r]
   else:
     d[output + '_energy_chunked_mask'] = {
-      'class': 'copy', 'from': masking_layers_from}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
+      'class': 'copy', 'from': masking_layers_from}  # [B,query_chunk_dim?,[query_window_dim?]?,2*key_window_dim,n,r]
 
   # Compute number of duplicates of each key
   if not allow_duplicate_attention:
-    d[output + '_key_accum_sort_to_orig_flattened'] = {
-      'class': 'merge_dims', 'from': [output + '_key_accum_sort_to_orig_chunked'],
-      'axes': ['stag:query-chunk?', 'stag:query-window?']}  # [B,query_chunk_dim?*query_window_dim?,2*key_window_dim,n,r] :: T|rec-history  # noqa
     d[output + '_key_accum_sort_to_orig_sorted'] = {
       'class': 'eval',
-      'from': [output + '_key_accum_sort_to_orig_flattened', output + '_kq_accum_orig_chunk_to_sort', output + '_value'],
+      'from': [output + '_key_accum_sort_to_orig_chunked', output + '_kq_accum_orig_chunk_to_sort', output + '_value'],
       'eval': maybe_gather, 'out_type': maybe_gather_template}  # [B,n,T|classes?,r,2*key_window_dim] :: T|rec-history
     d[output + '_key_accum_sort_to_orig_sorted_other'] = {
       'class': 'name_axis', 'axis': ['stag:att-round', 'stag:key-stacked-window'],
       'description': ['stag:att-round-other', 'stag:key-stacked-window-other'],
       'from': [output + '_key_accum_sort_to_orig_sorted']}  # [B,n,T|classes?,r',2*key_window_dim'] :: T|rec-history
 
-    d[output + '_energy_chunked_mask_flattened'] = {
-      'class': 'merge_dims', 'axes': ['stag:query-chunk?', 'stag:query-window?'],
-      'from': [output + '_energy_chunked_mask']}  # [B,query_chunk_dim?*query_window_dim?,n,r,2*key_window_dim]
-    d[output + '_energy_chunked_mask_sorted'] = {
-      'class': 'eval',
-      'from': [output + '_energy_chunked_mask_flattened', output + '_kq_accum_orig_to_sort', output + '_value'],
-      'eval': maybe_gather, 'out_type': maybe_gather_template}  # [B,n,T|classes?,n,r,2*key_window_dim]
+    if masking_layers_have_query_window:
+      d[output + '_energy_chunked_mask_flattened'] = {
+        'class': 'merge_dims', 'axes': ['stag:query-chunk?', 'stag:query-window?'],
+        'from': [output + '_energy_chunked_mask']}  # [B,query_chunk_dim?*query_window_dim?,n,r,2*key_window_dim]
+      d[output + '_energy_chunked_mask_sorted'] = {
+        'class': 'eval',
+        'from': [output + '_energy_chunked_mask_flattened', output + '_kq_accum_orig_to_sort', output + '_value'],
+        'eval': maybe_gather, 'out_type': maybe_gather_template}  # [B,n,T|classes?,n,r,2*key_window_dim]
+    else:
+      d[output + '_energy_chunked_mask_sorted'] = {
+        'class': 'eval',
+        'from': [output + '_energy_chunked_mask', output + '_kq_accum_orig_chunk_to_sort', output + '_value'],
+        'eval': maybe_gather, 'out_type': maybe_gather_template}  # [B,n,T|classes?,n,r,2*key_window_dim]
     d[output + '_energy_chunked_mask_sorted_other'] = {
       'class': 'name_axis', 'axis': ['stag:att-round', 'stag:key-stacked-window'],
       'description': ['stag:att-round-other', 'stag:key-stacked-window-other'],
@@ -515,12 +521,14 @@ def add_lsh_self_attention_layer(
     d[output + '_query_duplicates_sorted_compare_float'] = {
       'class': 'cast', 'from': [output + '_query_duplicates_sorted_compare'],
       'dtype': 'float32'}  # [B,n,T|classes?,r,2*key_window_dim,r',2*key_window_dim']
-    d[output + '_query_duplicates_sorted'] = {
+    d[output + '_query_duplicates_sorted_no_time'] = {
       'class': 'reduce', 'mode': 'sum', 'from': [output + '_query_duplicates_sorted_compare_float'],
       'axes': ['stag:att-round-other', 'stag:key-stacked-window-other']}  # [B,n,r,T|classes?,2*key_window_dim]
+    d[output + '_query_duplicates_sorted'] = {
+      'class': 'reinterpret_data', 'from': [output + '_query_duplicates_sorted_no_time'],
+      'set_axes': {'T': time_axis}}  # [B,n,r,T|classes?,2*key_window_dim]
     d[output + '_query_accum_duplicates_sorted'] = {
-      'class': 'cum_concat', 'axis': time_axis,
-      'from': [output + '_query_duplicates_sorted']}  # [B,n,r,T|rec-history,2*key_window_dim]
+      'class': 'cum_concat', 'from': [output + '_query_duplicates_sorted']}  # [B,n,r,T|rec-history,2*key_window_dim]
     d[output + '_query_accum_duplicates'] = {
       'class': 'gather', 'from': [output + '_query_accum_duplicates_sorted'], 'axis': 'stag:rec-history',
       'position': output + '_kq_accum_sort_to_orig'}  # [B,n,r,T|rec-history,2*key_window_dim]
@@ -643,7 +651,8 @@ def add_lsh_self_attention_layer(
       '_energy_chunked_mask', '_energy_chunked_mask_small',
       '_energy_chunked', '_weights_chunked', '_value_accum_unsorted', '_value_accum', '_value_accum_chunked',
       '_round_output_chunked', '_round_output_sorted', '_output', '_att'
-    ] + (['_query_duplicates_chunked', '_key_accum_sort_to_orig_flattened', '_key_accum_sort_to_orig_sorted', '_key_accum_sort_to_orig_sorted_other', '_query_duplicates_sorted_compare_unmasked'] if not allow_duplicate_attention else [])] \
+    ] + (['_query_duplicates_chunked', '_energy_chunked_mask_sorted', '_key_accum_sort_to_orig_sorted',
+      '_key_accum_sort_to_orig_sorted_other', '_query_duplicates_sorted', '_query_duplicates_sorted_compare_unmasked'] if not allow_duplicate_attention else [])] \
       + masking_layers_from + small_masking_layers_from:
       d[name + '_orig'] = d[name]
       d[name] = {'class': 'print', 'from': [name + '_orig']}
