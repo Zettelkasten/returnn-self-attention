@@ -440,6 +440,9 @@ def add_lsh_self_attention_layer(
     'class': 'eval',
     'eval': normalize_eval,
     'from': [output + '_kq_accum_chunked']}  # [key_chunk_dim,key_window_dim,B,n,r,F|d_k]
+  d[output + '_query_chunked_scaled'] = {
+    'class': 'eval', 'eval': '%s * source(0)' % (key_dim ** -0.5),
+    'from': [output + '_query_chunked']}  # [B,query_chunk_dim?,query_window_dim?,F|d_k]
 
   # Compute energy mask
   masking_layers_from = []
@@ -552,7 +555,7 @@ def add_lsh_self_attention_layer(
   d[output + '_energy_chunked_feature'] = {
     'class': 'dot', 'red1': 'static:-1', 'red2': 'static:-1',
     'var1': 'stag:query-window?', 'var2': 'stag:key-stacked-window',
-    'from': [output + '_query_chunked', output + '_key_accum_chunked'],
+    'from': [output + '_query_chunked_scaled', output + '_key_accum_chunked'],
     'debug': True}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
   d[output + '_energy_chunked_unmasked_duplicates'] = {
     'class': 'reinterpret_data', 'from': [output + '_energy_chunked_feature'],
@@ -570,13 +573,10 @@ def add_lsh_self_attention_layer(
     'class': 'switch', 'condition': output + '_energy_chunked_mask',
     'true_from': output + '_energy_chunked_unmasked',
     'false_from': float('-inf')}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
-  d[output + '_energy_chunked_unscaled'] = {
+  d[output + '_energy_chunked'] = {
     'class': 'switch', 'condition': output + '_energy_chunked_mask_small',
     'true_from': mask_current_value,
     'false_from': output + '_energy_chunked_not_small'}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
-  d[output + '_energy_chunked'] = {
-    'class': 'eval', 'eval': '%s * source(0)' % (key_dim ** -0.5),
-    'from': [output + '_energy_chunked_unscaled']}  # [B,query_chunk_dim?,query_window_dim?,2*key_window_dim,n,r]
   d[output + '_energy_chunked_logsumexp'] = {
     'class': 'reduce', 'mode': 'logsumexp', 'axis': 'stag:key-stacked-window',
     'from': [output + '_energy_chunked']}  # [B,query_chunk_dim?,query_window_dim?,n,r]
