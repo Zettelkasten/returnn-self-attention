@@ -256,7 +256,7 @@ def add_lsh_self_attention_layer(
   :param int key_dim: feature dimension of keys and queries
   :param int value_dim: feature dimension of values
   :param int dropout: apply dropout to the attention weights
-  :param int|None num_hashes: number of different attention hashes, must be an even number
+  :param int num_hashes: number of different attention hashes, must be an even number
   :param int chunk_size: window size within a single chunk
   :param int|None chunks_before: number of chunks we look into the past
   :param int|None chunks_after: number of chunks we look into the future

@@ -1,3 +1,20 @@
+from self_attention import make_lsh_hash_gen
+
+
+def _query_key_time_default(query_time_axis, key_time_axis):
+  """
+  :param None|str query_time_axis:
+  :param None|str key_time_axis:
+  :rtype: tuple[str,str]
+  """
+  assert (query_time_axis is None) == (key_time_axis is None)
+  if query_time_axis is None:
+    query_time_axis = 'stag:extern_data:classes'
+    key_time_axis = 'stag:extern_data:data'
+  assert query_time_axis.startswith('stag:')
+  assert key_time_axis.startswith('stag:')
+  return query_time_axis, key_time_axis
+
 
 def add_vanilla_cross_attention_layer(
   d, input, output, keys_input, query_time_axis=None, key_time_axis=None,
@@ -18,12 +35,7 @@ def add_vanilla_cross_attention_layer(
   :param float dropout:
   :param str ff_init:
   """
-  assert (query_time_axis is None) == (key_time_axis is None)
-  if query_time_axis is None:
-    query_time_axis = 'stag:extern_data:classes'
-    key_time_axis = 'stag:extern_data:data'
-  assert query_time_axis.startswith('stag:')
-  assert key_time_axis.startswith('stag:')
+  query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
 
   # Create query, key and value
   d[output + '_query0'] = {
@@ -45,16 +57,10 @@ def add_vanilla_cross_attention_layer(
     'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, value_dim),
     'from': [output + '_value0']}  # [B,key-T,n,F|d_v]
 
-  # Calculate the energies
+  # Calculate the energies + weights
   d[output + '_energy'] = {
     'class': 'dot', 'from': [output + '_query', output + '_key'], 'red1': 'static:-1', 'red2': 'static:-1',
     'var1': query_time_axis + '?', 'var2': key_time_axis}  # [B,n,query-T?,key-T]
-
-  # If past_only=True, do not apply a time mask here, as we apply our own masking using energy_mask.
-  # If we would apply additional masking here, we would mask away all keys for queries that are unmasked, giving
-  # attention weights NaN for these queries. Even though these are masked away later in the forward pass, the gradient
-  # can still become NaN.
-  # If past_only=False, do apply the normal time mask.
   d[output + '_weights'] = {
     'class': 'softmax_over_spatial', 'from': [output + '_energy'], 'axis': key_time_axis,
     'energy_factor': key_dim ** -0.5,
@@ -69,3 +75,57 @@ def add_vanilla_cross_attention_layer(
   d[output + '_att'] = {
     'class': 'merge_dims', 'axes': 'static',
     'from': [output + '_output']}  # [B,query-T?,F|n*d_v]
+
+
+def add_full_lsh_cross_attention_layer(
+  d, input, output, keys_input, query_time_axis=None, key_time_axis=None,
+  num_heads=8, key_dim=64, value_dim=64, dropout=0.0,
+  ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
+  num_hashes=14, num_rounds=1, mask_current_value=float(-10**5), mask_different_hashes=True):
+  """
+  Add a cross-attention layer with masking as in the LSH case.
+  This way, you can e.g. train a system using LSH attention, but then do search using this.
+
+  :param dict[str, Any] d:
+  :param str input:
+  :param str output:
+  :param str keys_input:
+  :param None|str query_time_axis:
+  :param None|str key_time_axis:
+  :param int num_heads:
+  :param int key_dim:
+  :param int value_dim:
+  :param float dropout:
+  :param str ff_init:
+  :param int num_hashes:
+  :param int num_rounds:
+  :param float mask_current_value:
+  :param bool mask_different_hashes:
+  """
+  query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
+
+  add_vanilla_cross_attention_layer(
+    d, input, output, keys_input, query_time_axis=query_time_axis, key_time_axis=key_time_axis,
+    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, dropout=dropout, ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
+  make_lsh_hash_gen(
+    d, output + '_hash_gen', key_dim=key_dim, num_hashes=num_hashes, num_heads=num_heads, num_rounds=num_rounds,
+    ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
+
+  assert mask_different_hashes, 'can just call add_vanilla_cross_attention_layer(..) instead'
+  apply_lsh_hash_gen(
+    d, input=output + '_query', hash_gen_input=output + '_hash_gen', output='_query_hash',
+    time_axis=query_time_axis)  # [B,n,r,query-T?] :: d_h
+  apply_lsh_hash_gen(
+    d, input=output + '_key', hash_gen_input=output + '_hash_gen', output='_key_hash',
+    time_axis=key_time_axis)  # [B,n,r,key-T] :: d_h
+  assert num_rounds == 1, 'not implemented yet otherwise'
+  d[output + '_energy_mask_rounds'] = {
+    'class': 'compare', 'from': [output + '_query_hash', output + '_key_hash'],
+    'kind': 'equal'}  # [B,n,r,T-query?,T-key]
+  d[output + '_energy_mask'] = {
+    'class': 'squeeze', 'axis': 'stag:att-round', 'from': [output + '_energy_mask_rounds']}  # [B,n,T-query?,T-key]
+  assert (output + '_energy') in d
+  d[output + '_energy_unmasked'] = d[output + '_energy']  # [B,n,query-T?,key-T]
+  d[output + '_energy'] = {
+    'class': 'switch', 'condition': output + '_energy_mask',
+    'true_from': output + '_energy_unmasked', 'false_from': mask_current_value}  # [B,n,query-T?,key-T]
