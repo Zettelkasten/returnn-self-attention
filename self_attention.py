@@ -179,10 +179,57 @@ def key_to_query_window_template(name, sources, chunk_size, **kwargs):
 normalize_eval = 'tf.math.divide_no_nan(source(0), tf.norm(source(0), axis=source(0, as_data=True).feature_dim_axis, ' \
                  'keepdims=True))'
 
+
+def make_lsh_hash_gen(d, output, key_dim, num_hashes, num_heads, num_rounds,
+                      ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0):
+  """
+  :param dict[str,dict] d: the network dict to write into
+  :param str output: prefix of all layers generated. Output is written into output + '_hash_gen' layer.
+  :param int key_dim:
+  :param int num_hashes:
+  :param int num_heads:
+  :param int num_rounds:
+  :param str ff_init: initializer for the hash generator matrix
+  """
+  assert num_hashes % 2 == 0
+  d[output + '_top_unnamed'] = {
+    'class': 'variable', 'shape': (num_heads, num_rounds, key_dim, num_hashes // 2),
+    'trainable': False, 'init': ff_init, 'add_batch_axis': True}  # [B,n,r,d_k,F|d_h/2]
+  d[output + '_top'] = {
+    'class': 'name_axis', 'axis': ['static:0', 'static:1'], 'description': ['att-heads', 'att-rounds'],
+    'from': [output + '_top_unnamed']}  # [B,n,r,d_k,F|d_h/2]
+  d[output + '_bottom'] = {
+    'class': 'eval', 'eval': '-source(0)',
+    'from': [output + '_top']}  # [B,n,r,d_k,F|d_h/2]
+  d[output] = {
+    'class': 'copy',
+    'from': [output + '_top', output + '_bottom']}  # [B,n,r,d_k,F|d_h]
+
+
+def apply_lsh_hash_gen(d, input, hash_gen_input, output, time_axis):
+  """
+  :param dict[str,dict] d:
+  :param str input:
+  :param str hash_gen_input:
+  :param str output:
+  :param str time_axis:
+  """
+  d[output + '_linear'] = {
+    'class': 'dot', 'from': [hash_gen_input, input], 'debug': True,
+    'red1': 'static:-2', 'red2': 'F', 'var1': ['stag:att-rounds', 'static:-1'],
+    'var2': time_axis + '?', 'add_var2_if_empty': False}  # [B,T|classes?,n,r,F|d_h]
+  d[output + '_sparse'] = {
+    'class': 'reduce', 'mode': 'argmax', 'axes': 'static:-1',
+    'from': [output + '_linear']}  # [B,T|classes?,n,r] :: d_h
+  d[output] = {
+    'class': 'reinterpret_data', 'from': [output + '_sparse'],
+    'set_sparse': False, 'set_axes': {'F': None}}  # [B,T|classes?,n,r] :: d_h
+
+
 def add_lsh_self_attention_layer(
   d, input, output, inside_rec_layer=True, past_only=None, time_axis=None,
   num_heads=8, num_rounds=1, key_dim=64, value_dim=64, dropout=0.0, num_hashes=14, chunk_size=5, chunks_before=None,
-  chunks_after=None, ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
+  chunks_after=None, ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   mask_current=True, mask_current_value=float(-10**5), mask_different_hashes=True, allow_duplicate_attention=False,
   debug_print=False):
   """
@@ -237,6 +284,8 @@ def add_lsh_self_attention_layer(
   assert chunks_before >= 0 and chunks_after >= 0
   chunk_stack_offsets_before = list(range(-chunks_before, 0))
   chunk_stack_offsets_after = list(range(1, chunks_after + 1))
+  hash_mask_value = 2 ** 31 - 1
+  assert hash_mask_value > num_hashes
 
   # Assume input [B,T|classes?,F|d_model]
 
@@ -365,31 +414,12 @@ def add_lsh_self_attention_layer(
         'position': output + '_sort_key_to_query_window'}  # [X,query_chunk_dim?,query_window_dim?]
 
   # Hash the key/query
-  assert num_hashes % 2 == 0
-  hash_mask_value = 2**31-1
-  assert hash_mask_value > num_hashes
-  d[output + '_hash_gen_top_unnamed'] = {
-    'class': 'variable', 'shape': (num_heads, num_rounds, key_dim, num_hashes // 2),
-    'trainable': False, 'init': ff_init, 'add_batch_axis': True}  # [B,n,r,d_k,F|d_h/2]
-  d[output + '_hash_gen_top'] = {
-    'class': 'name_axis', 'axis': ['static:0', 'static:1'], 'description': ['att-heads', 'att-rounds'],
-    'from': [output + '_hash_gen_top_unnamed']}  # [B,n,r,d_k,F|d_h/2]
-  d[output + '_hash_gen_bottom'] = {
-    'class': 'eval', 'eval': '-source(0)',
-    'from': [output + '_hash_gen_top']}  # [B,n,r,d_k,F|d_h/2]
-  d[output + '_hash_gen'] = {
-    'class': 'copy',
-    'from': [output + '_hash_gen_top', output + '_hash_gen_bottom']}  # [B,n,r,d_k,F|d_h]
-  d[output + '_kq_hash_linear'] = {
-    'class': 'dot', 'from': [output + '_hash_gen', output + '_kq'], 'debug': True,
-    'red1': 'static:-2', 'red2': 'F', 'var1': ['stag:att-rounds', 'static:-1'],
-    'var2': time_axis + '?', 'add_var2_if_empty': False}  # [B,T|classes?,n,r,F|d_h]
-  d[output + '_kq_hash_sparse'] = {
-    'class': 'reduce', 'mode': 'argmax', 'axes': 'static:-1',
-    'from': [output + '_kq_hash_linear']}  # [B,T|classes?,n,r] :: d_h
-  d[output + '_kq_hash'] = {
-    'class': 'reinterpret_data', 'from': [output + '_kq_hash_sparse'],
-    'set_sparse': False, 'set_axes': {'F': None}}  # [B,T|classes?,n,r] :: d_h
+  make_lsh_hash_gen(
+    d, output + '_hash_gen', key_dim=key_dim, num_hashes=num_hashes, num_heads=num_heads, num_rounds=num_rounds,
+    ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
+  apply_lsh_hash_gen(
+    d, input=output + '_kq', hash_gen_input=output + '_hash_gen', output=output + '_kq_hash',
+    time_axis=time_axis)  # [B,T|classes?,n,r] :: d_h
 
   # Accumulate all past hashes
   d[output + '_kq_accum_hash_unsorted_unmasked'] = {
