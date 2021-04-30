@@ -1,4 +1,4 @@
-from self_attention import make_lsh_hash_gen
+from self_attention import make_lsh_hash_gen, apply_lsh_hash_gen
 
 
 def _query_key_time_default(query_time_axis, key_time_axis):
@@ -17,7 +17,7 @@ def _query_key_time_default(query_time_axis, key_time_axis):
 
 
 def add_vanilla_cross_attention_layer(
-  d, input, output, keys_input, query_time_axis=None, key_time_axis=None,
+  d, input, keys_input, output, query_time_axis=None, key_time_axis=None,
   num_heads=8, key_dim=64, value_dim=64, dropout=0.0,
   ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0):
   """
@@ -25,8 +25,8 @@ def add_vanilla_cross_attention_layer(
 
   :param dict[str, Any] d:
   :param str input:
-  :param str output:
   :param str keys_input:
+  :param str output:
   :param None|str query_time_axis:
   :param None|str key_time_axis:
   :param int num_heads:
@@ -78,7 +78,7 @@ def add_vanilla_cross_attention_layer(
 
 
 def add_full_lsh_cross_attention_layer(
-  d, input, output, keys_input, query_time_axis=None, key_time_axis=None,
+  d, input, keys_input, output, query_time_axis=None, key_time_axis=None,
   num_heads=8, key_dim=64, value_dim=64, dropout=0.0,
   ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   num_hashes=14, num_rounds=1, mask_current_value=float(-10**5), mask_different_hashes=True):
@@ -88,8 +88,8 @@ def add_full_lsh_cross_attention_layer(
 
   :param dict[str, Any] d:
   :param str input:
-  :param str output:
   :param str keys_input:
+  :param str output:
   :param None|str query_time_axis:
   :param None|str key_time_axis:
   :param int num_heads:
@@ -105,18 +105,19 @@ def add_full_lsh_cross_attention_layer(
   query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
 
   add_vanilla_cross_attention_layer(
-    d, input, output, keys_input, query_time_axis=query_time_axis, key_time_axis=key_time_axis,
-    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, dropout=dropout, ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
+    d=d, input=input, keys_input=keys_input, output=output, query_time_axis=query_time_axis,
+    key_time_axis=key_time_axis, num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, dropout=dropout,
+    ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
   make_lsh_hash_gen(
     d, output + '_hash_gen', key_dim=key_dim, num_hashes=num_hashes, num_heads=num_heads, num_rounds=num_rounds,
     ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
 
   assert mask_different_hashes, 'can just call add_vanilla_cross_attention_layer(..) instead'
   apply_lsh_hash_gen(
-    d, input=output + '_query', hash_gen_input=output + '_hash_gen', output='_query_hash',
+    d, input=output + '_query', hash_gen_input=output + '_hash_gen', output=output + '_query_hash',
     time_axis=query_time_axis)  # [B,n,r,query-T?] :: d_h
   apply_lsh_hash_gen(
-    d, input=output + '_key', hash_gen_input=output + '_hash_gen', output='_key_hash',
+    d, input=output + '_key', hash_gen_input=output + '_hash_gen', output=output + '_key_hash',
     time_axis=key_time_axis)  # [B,n,r,key-T] :: d_h
   assert num_rounds == 1, 'not implemented yet otherwise'
   d[output + '_energy_mask_rounds'] = {
