@@ -13,7 +13,8 @@ from returnn.config import Config
 from returnn.tf.network import *
 from returnn.tf.layers.basic import *
 
-from lsh_attention import *
+from self_attention import *
+from cross_attention import *
 
 
 def _test_lsh_attention_optimize_out(chunk_size, chunks_before, chunks_after, num_hashes=26):
@@ -336,6 +337,41 @@ def test_vanilla_self_attention_optimize_out():
   check_reclayer_optimize_out(
     {'class': 'copy', 'from': 'att_att', 'n_out': value_dim * num_heads},
     other_subnet_layers=network)
+
+
+def test_full_lsh_cross_attention_construct():
+  num_heads, key_dim, value_dim = 2, 3, 3
+  net_dict = {
+    'encoder': {'class': 'linear', 'n_out': 5, 'activation': None},
+    'output': {
+      'class': 'rec',
+      'target': 'classes',
+      'max_seq_len': 'max_len_from("base:encoder") * 3',
+      'unit': {
+        'embed': {'class': 'linear', 'activation': None, 'from': ['prev:output'], "n_out": 7},
+        'att_att': None,
+        'output_prob': {'class': 'softmax', 'from': 'att_att', 'target': 'classes'},
+        'output': {
+          'class': 'choice', 'beam_size': 4, 'target': 'classes', 'from': ['output_prob'], 'initial_output': 'zeros',
+          'loss': 'ce', 'is_output_layer': True},
+        "end": {'class': 'compare', 'from': ['output'], 'value': 0},
+      }
+    },
+    'decision': {'class': 'decide', 'from': ['output'], 'loss': 'edit_distance', 'loss_opts': {}, 'target': 'classes'}
+  }
+
+  add_vanilla_cross_attention_layer(
+    net_dict, net_dict['output']['unit'], input='embed', keys_input='base:encoder', output='att', num_heads=num_heads,
+    key_dim=key_dim, value_dim=value_dim)
+  pprint(net_dict)
+
+  with make_scope():
+    extern_data = ExternData({
+      "data": {"dim": 7, "sparse": True},
+      "classes": {"dim": 6, "sparse": True, "available_for_inference": False}})
+    net = TFNetwork(
+      extern_data=extern_data, search_flag=True, train_flag=False, eval_flag=False)
+    net.construct_from_dict(net_dict)
 
 
 if __name__ == "__main__":

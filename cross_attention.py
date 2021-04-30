@@ -17,7 +17,7 @@ def _query_key_time_default(query_time_axis, key_time_axis):
 
 
 def add_vanilla_cross_attention_layer(
-  d, input, keys_input, output, query_time_axis=None, key_time_axis=None,
+  db, d, input, keys_input, output, query_time_axis=None, key_time_axis=None,
   num_heads=8, key_dim=64, value_dim=64, dropout=0.0,
   ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0):
   """
@@ -36,6 +36,9 @@ def add_vanilla_cross_attention_layer(
   :param str ff_init:
   """
   query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
+
+  assert 'encoder' in db
+  db['encoder']['is_output_layer'] = True
 
   # Create query, key and value
   d[output + '_query0'] = {
@@ -71,10 +74,11 @@ def add_vanilla_cross_attention_layer(
 
   d[output + '_output'] = {
     'class': 'dot', 'from': [output + '_weights_drop', output + '_value'], 'red1': key_time_axis, 'red2': key_time_axis,
-    'var1': query_time_axis + '?', 'var2': 'static:-1'}  # [B,n,query-T?,key-T]
+    'var1': query_time_axis + '?', 'var2': 'static:-1'}  # [B,n,query-T?,d_v]
   d[output + '_att'] = {
     'class': 'merge_dims', 'axes': 'static',
     'from': [output + '_output']}  # [B,query-T?,F|n*d_v]
+  # d[output + '_att'] = {'class': 'copy', 'from': output + '_query0'}
 
 
 def add_full_lsh_cross_attention_layer(
