@@ -361,8 +361,8 @@ def test_full_lsh_cross_attention_construct():
   }
 
   add_vanilla_cross_attention_layer(
-    net_dict, net_dict['output']['unit'], input='embed', keys_input='base:encoder', output='att', num_heads=num_heads,
-    key_dim=key_dim, value_dim=value_dim)
+    d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder', output='att',
+    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim)
   pprint(net_dict)
 
   with make_scope():

@@ -17,13 +17,14 @@ def _query_key_time_default(query_time_axis, key_time_axis):
 
 
 def add_vanilla_cross_attention_layer(
-  db, d, input, keys_input, output, query_time_axis=None, key_time_axis=None,
+  d, db, input, keys_input, output, query_time_axis=None, key_time_axis=None,
   num_heads=8, key_dim=64, value_dim=64, dropout=0.0,
   ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0):
   """
   Add a cross-attention layer.
 
   :param dict[str, Any] d:
+  :param dict[str, Any] db:
   :param str input:
   :param str keys_input:
   :param str output:
@@ -37,32 +38,32 @@ def add_vanilla_cross_attention_layer(
   """
   query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
 
-  assert 'encoder' in db
-  db['encoder']['is_output_layer'] = True
+  assert keys_input.startswith('base:')
+  keys_input = keys_input[len('base:'):]
 
   # Create query, key and value
   d[output + '_query0'] = {
     'class': 'linear', 'activation': None, 'with_bias': False, 'from': [input],
     'n_out': num_heads * key_dim, 'forward_weights_init': ff_init}  # [B,query-T?,F|n*d_k]
-  d[output + '_key0'] = {
+  db[output + '_key0'] = {
     'class': 'linear', 'activation': None, 'with_bias': False, 'from': [keys_input],
     'n_out': num_heads * key_dim, 'forward_weights_init': ff_init}  # [B,key-T,F|n*d_k]
-  d[output + '_value0'] = {
+  db[output + '_value0'] = {
     'class': 'linear', 'activation': None, 'with_bias': False, 'from': [keys_input],
     'n_out': num_heads * value_dim, 'forward_weights_init': ff_init}  # [B,key-T,F|n*d_v]
   d[output + '_query'] = {
     'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, key_dim),
     'from': [output + '_query0']}  # [B,query-T?,n,F|d_k]
-  d[output + '_key'] = {
+  db[output + '_key'] = {
     'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, key_dim),
     'from': [output + '_key0']}  # [B,key-T,n,F|d_k]
-  d[output + '_value'] = {
+  db[output + '_value'] = {
     'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, value_dim),
     'from': [output + '_value0']}  # [B,key-T,n,F|d_v]
 
   # Calculate the energies + weights
   d[output + '_energy'] = {
-    'class': 'dot', 'from': [output + '_query', output + '_key'], 'red1': 'static:-1', 'red2': 'static:-1',
+    'class': 'dot', 'from': [output + '_query', 'base:' + output + '_key'], 'red1': 'static:-1', 'red2': 'static:-1',
     'var1': query_time_axis + '?', 'var2': key_time_axis}  # [B,n,query-T?,key-T]
   d[output + '_weights'] = {
     'class': 'softmax_over_spatial', 'from': [output + '_energy'], 'axis': key_time_axis,
@@ -73,8 +74,8 @@ def add_vanilla_cross_attention_layer(
     'dropout': dropout}  # [B,n,query-T?,key-T]
 
   d[output + '_output'] = {
-    'class': 'dot', 'from': [output + '_weights_drop', output + '_value'], 'red1': key_time_axis, 'red2': key_time_axis,
-    'var1': query_time_axis + '?', 'var2': 'static:-1'}  # [B,n,query-T?,d_v]
+    'class': 'dot', 'from': [output + '_weights_drop', 'base:' + output + '_value'], 'red1': key_time_axis,
+    'red2': key_time_axis, 'var1': query_time_axis + '?', 'var2': 'static:-1'}  # [B,n,query-T?,d_v]
   d[output + '_att'] = {
     'class': 'merge_dims', 'axes': 'static',
     'from': [output + '_output']}  # [B,query-T?,F|n*d_v]
@@ -82,7 +83,7 @@ def add_vanilla_cross_attention_layer(
 
 
 def add_full_lsh_cross_attention_layer(
-  d, input, keys_input, output, query_time_axis=None, key_time_axis=None,
+  d, db, input, keys_input, output, query_time_axis=None, key_time_axis=None,
   num_heads=8, key_dim=64, value_dim=64, dropout=0.0,
   ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   num_hashes=14, num_rounds=1, mask_current_value=float(-10**5), mask_different_hashes=True):
@@ -91,6 +92,7 @@ def add_full_lsh_cross_attention_layer(
   This way, you can e.g. train a system using LSH attention, but then do search using this.
 
   :param dict[str, Any] d:
+  :param dict[str, Any] db:
   :param str input:
   :param str keys_input:
   :param str output:
@@ -108,8 +110,9 @@ def add_full_lsh_cross_attention_layer(
   """
   query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
 
+  assert keys_input.startswith('base:')
   add_vanilla_cross_attention_layer(
-    d=d, input=input, keys_input=keys_input, output=output, query_time_axis=query_time_axis,
+    d=d, db=db, input=input, keys_input=keys_input, output=output, query_time_axis=query_time_axis,
     key_time_axis=key_time_axis, num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, dropout=dropout,
     ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
   make_lsh_hash_gen(
@@ -121,7 +124,7 @@ def add_full_lsh_cross_attention_layer(
     d, input=output + '_query', hash_gen_input=output + '_hash_gen', output=output + '_query_hash',
     time_axis=query_time_axis)  # [B,n,r,query-T?] :: d_h
   apply_lsh_hash_gen(
-    d, input=output + '_key', hash_gen_input=output + '_hash_gen', output=output + '_key_hash',
+    d, input='base:' + output + '_key', hash_gen_input=output + '_hash_gen', output=output + '_key_hash',
     time_axis=key_time_axis)  # [B,n,r,key-T] :: d_h
   assert num_rounds == 1, 'not implemented yet otherwise'
   d[output + '_energy_mask_rounds'] = {
