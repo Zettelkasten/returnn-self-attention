@@ -51,15 +51,24 @@ def add_vanilla_cross_attention_layer(
   db[output + '_value0'] = {
     'class': 'linear', 'activation': None, 'with_bias': False, 'from': [keys_input],
     'n_out': num_heads * value_dim, 'forward_weights_init': ff_init}  # [B,key-T,F|n*d_v]
-  d[output + '_query'] = {
+  d[output + '_query_unnamed'] = {
     'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, key_dim),
     'from': [output + '_query0']}  # [B,query-T?,n,F|d_k]
-  db[output + '_key'] = {
+  db[output + '_key_unnamed'] = {
     'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, key_dim),
     'from': [output + '_key0']}  # [B,key-T,n,F|d_k]
-  db[output + '_value'] = {
+  db[output + '_value_unnamed'] = {
     'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, value_dim),
     'from': [output + '_value0']}  # [B,key-T,n,F|d_v]
+  d[output + '_query'] = {
+    'class': 'name_axis', 'axis': 'static:-2', 'description': 'att-heads',
+    'from': [output + '_query_unnamed']}  # [B,query-T?,n,F|d_k]
+  db[output + '_key'] = {
+    'class': 'name_axis', 'axis': 'static:-2', 'description': 'att-heads',
+    'from': [output + '_key_unnamed']}  # [B,key-T,n,F|d_k]
+  db[output + '_value'] = {
+    'class': 'name_axis', 'axis': 'static:-2', 'description': 'att-heads',
+    'from': [output + '_value_unnamed']}  # [B,key-T,n,F|d_v]
 
   # Calculate the energies + weights
   d[output + '_energy'] = {
@@ -73,9 +82,12 @@ def add_vanilla_cross_attention_layer(
     'class': 'dropout', 'dropout_noise_shape': {'*': None}, 'from': [output + '_weights'],
     'dropout': dropout}  # [B,n,query-T?,key-T]
 
-  d[output + '_output'] = {
+  d[output + '_output_named'] = {
     'class': 'dot', 'from': [output + '_weights_drop', 'base:' + output + '_value'], 'red1': key_time_axis,
     'red2': key_time_axis, 'var1': query_time_axis + '?', 'var2': 'static:-1'}  # [B,n,query-T?,d_v]
+  d[output + '_output'] = {
+    'class': 'name_axis', 'from': [output + '_output_named'], 'axis': 'stag:att-heads',
+    'description': None}  # [B,n,query-T?,d_v]
   d[output + '_att'] = {
     'class': 'merge_dims', 'axes': 'static',
     'from': [output + '_output']}  # [B,query-T?,F|n*d_v]
@@ -110,25 +122,29 @@ def add_full_lsh_cross_attention_layer(
   """
   query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
 
+  # build standard self-attention
   assert keys_input.startswith('base:')
   add_vanilla_cross_attention_layer(
     d=d, db=db, input=input, keys_input=keys_input, output=output, query_time_axis=query_time_axis,
     key_time_axis=key_time_axis, num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, dropout=dropout,
     ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
-  make_lsh_hash_gen(
-    d, output + '_hash_gen', key_dim=key_dim, num_hashes=num_hashes, num_heads=num_heads, num_rounds=num_rounds,
-    ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
 
+  # hash keys and queries
   assert mask_different_hashes, 'can just call add_vanilla_cross_attention_layer(..) instead'
+  make_lsh_hash_gen(
+    db, output + '_hash_gen', key_dim=key_dim, num_hashes=num_hashes, num_heads=num_heads, num_rounds=num_rounds,
+    ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
   apply_lsh_hash_gen(
-    d, input=output + '_query', hash_gen_input=output + '_hash_gen', output=output + '_query_hash',
+    d, input=output + '_query', hash_gen_input='base:' + output + '_hash_gen', output=output + '_query_hash',
     time_axis=query_time_axis)  # [B,n,r,query-T?] :: d_h
   apply_lsh_hash_gen(
-    d, input='base:' + output + '_key', hash_gen_input=output + '_hash_gen', output=output + '_key_hash',
+    db, input=output + '_key', hash_gen_input=output + '_hash_gen', output=output + '_key_hash',
     time_axis=key_time_axis)  # [B,n,r,key-T] :: d_h
   assert num_rounds == 1, 'not implemented yet otherwise'
+
+  # build and apply additional energy mask
   d[output + '_energy_mask_rounds'] = {
-    'class': 'compare', 'from': [output + '_query_hash', output + '_key_hash'],
+    'class': 'compare', 'from': [output + '_query_hash', 'base:' + output + '_key_hash'],
     'kind': 'equal'}  # [B,n,r,T-query?,T-key]
   d[output + '_energy_mask'] = {
     'class': 'squeeze', 'axis': 'stag:att-round', 'from': [output + '_energy_mask_rounds']}  # [B,n,T-query?,T-key]

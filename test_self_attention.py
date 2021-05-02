@@ -360,9 +360,9 @@ def test_full_lsh_cross_attention_construct():
     'decision': {'class': 'decide', 'from': ['output'], 'loss': 'edit_distance', 'loss_opts': {}, 'target': 'classes'}
   }
 
-  add_vanilla_cross_attention_layer(
+  add_full_lsh_cross_attention_layer(
     d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder', output='att',
-    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim)
+    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=6)
   pprint(net_dict)
 
   with make_scope():
@@ -372,6 +372,7 @@ def test_full_lsh_cross_attention_construct():
     net = TFNetwork(
       extern_data=extern_data, search_flag=True, train_flag=False, eval_flag=False)
     net.construct_from_dict(net_dict)
+    print(net.layers)
 
 
 if __name__ == "__main__":
