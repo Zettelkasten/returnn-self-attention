@@ -91,7 +91,11 @@ def add_vanilla_cross_attention_layer(
   d[output + '_att'] = {
     'class': 'merge_dims', 'axes': 'static',
     'from': [output + '_output']}  # [B,query-T?,F|n*d_v]
-  # d[output + '_att'] = {'class': 'copy', 'from': output + '_query0'}
+
+  # there is a bug in HDF dump layer when naming static dimensions. Expose this here to extract the att weights.
+  d[output + '_weights_unnamed'] = {
+    'class': 'name_axis', 'from': [output + '_weights'], 'axis': 'stag:att-heads',
+    'description': None}  # [B,n,query-T?,key-T]
 
 
 def add_full_lsh_cross_attention_layer(
