@@ -179,6 +179,9 @@ def key_to_query_window_template(name, sources, chunk_size, **kwargs):
 normalize_eval = 'tf.math.divide_no_nan(source(0), tf.norm(source(0), axis=source(0, as_data=True).feature_dim_axis, ' \
                  'keepdims=True))'
 
+argsort_eval = 'tf.argsort(source(0), axis=source(0, as_data=True).get_axis_from_description("%s"), ' \
+               'direction="ASCENDING", stable=True)'
+
 
 def make_lsh_hash_gen(d, output, key_dim, num_hashes, num_heads, num_rounds,
                       ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0):
@@ -206,13 +209,14 @@ def make_lsh_hash_gen(d, output, key_dim, num_hashes, num_heads, num_rounds,
     'from': [output + '_top', output + '_bottom']}  # [B,n,r,d_k,F|d_h]
 
 
-def apply_lsh_hash_gen(d, input, hash_gen_input, output, time_axis):
+def apply_lsh_hash_gen(d, input, hash_gen_input, output, time_axis, hash_mask_value=2 ** 31 - 1):
   """
   :param dict[str,dict] d:
   :param str input:
   :param str hash_gen_input:
   :param str output:
   :param str time_axis:
+  :param int hash_mask_value:
   """
   d[output + '_linear'] = {
     'class': 'dot', 'from': [hash_gen_input, input], 'debug': True,
@@ -221,12 +225,15 @@ def apply_lsh_hash_gen(d, input, hash_gen_input, output, time_axis):
   d[output + '_sparse'] = {
     'class': 'reduce', 'mode': 'argmax', 'axes': 'static:-1',
     'from': [output + '_linear']}  # [B,T|classes?,n,r] :: d_h
-  d[output] = {
+  d[output + '_unmasked'] = {
     'class': 'reinterpret_data', 'from': [output + '_sparse'],
     'set_sparse': False, 'set_axes': {'F': None}}  # [B,T|classes?,n,r] :: d_h
+  d[output] = {
+    'class': 'seq_len_mask', 'from': [output + '_unmasked'], 'axis': time_axis,
+    'mask_value': hash_mask_value}  # [B,T|classes?,n,r] :: d_h
 
 
-def add_lsh_self_attention_layer(
+def legacy_add_lsh_self_attention_layer(
   d, input, output, inside_rec_layer=True, past_only=None, time_axis=None,
   num_heads=8, num_rounds=1, key_dim=64, value_dim=64, dropout=0.0, num_hashes=14, chunk_size=5, chunks_before=None,
   chunks_after=None, ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
@@ -431,8 +438,7 @@ def add_lsh_self_attention_layer(
 
   # Compute a permutation by looking at the unsorted hashes
   d[output + '_kq_accum_sort_to_orig'] = {
-    'class': 'eval',
-    'eval': 'tf.argsort(source(0), axis=source(0, as_data=True).get_axis_from_description("stag:rec-history"), direction="ASCENDING", stable=True)',
+    'class': 'eval', 'eval': argsort_eval % 'stag:rec-history',
     'from': [output + '_kq_accum_hash_unsorted']}  # [B,T|rec-history,n,r] :: T|rec-history
   chunk_accumulated('sort_to_orig', pad_value=hash_mask_value)
 
