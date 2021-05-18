@@ -108,8 +108,8 @@ def add_lsh_attention_layer(
   d[output + '_sorted_keys_orig_indices'] = {
     'class': 'eval', 'eval': argsort_eval % key_time_axis,
     'from': [output + '_keys_hashed']}  # [B,sorted-key-time,n,r] :: key-time
-  chunk_query_sequence('queries_orig_indices', pad_value=small_mask_value)  # [B,n,r,query-chunk,query-window] :: query-time  # noqa
-  chunk_key_sequence('keys_orig_indices', pad_value=small_mask_value)  # [B,n,r,key-chunk,key-window] :: key-time
+  chunk_query_sequence('queries_orig_indices', pad_value=hash_mask_value)  # [B,n,r,query-chunk,query-window] :: query-time  # noqa
+  chunk_key_sequence('keys_orig_indices', pad_value=hash_mask_value)  # [B,n,r,key-chunk,key-window] :: key-time
   stack_chunked_key_sequence('keys_orig_indices')  # [B,n,r,query-chunk,stacked-key-window] :: key-time
 
   # Invert permutation to undo sorting later
