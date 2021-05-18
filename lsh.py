@@ -81,7 +81,7 @@ def add_lsh_attention_layer(
       'class': 'gather', 'from': [output + '_sorted_chunked_%s' % name], 'position': output + '_query_chunk_alignment',
       'axis': 'stag:key-chunk'}  # [B,n,r,query-chunk,key-chunk-offset,key-window,F]
     d[output + '_sorted_chunked_stacked_%s_unnamed' % name] = {
-      'class': 'merge_dims', 'from': [output + '_sorted_chunked_stacked_%s_unflattened' % name],
+      'class': 'merge_dims', 'from': [output + '_sorted_chunked_stacked_%s_unflattened' % name], 'keep_order': True,
       'axes': ['stag:key-chunk-offset', 'stag:key-window']}  # [B,n,r,query-chunk,key-chunk-offset*key-window,F]
     d[output + '_sorted_chunked_stacked_%s' % name] = {
       'class': 'name_axis', 'from': [output + '_sorted_chunked_stacked_%s_unnamed' % name],
@@ -144,9 +144,9 @@ def add_lsh_attention_layer(
     'position': output + '_sorted_keys_orig_indices'}  # [B,sorted-key-time,n,r,F|d_v]
 
   # Chunk the sorted queries and keys and values
-  chunk_query_sequence('queries', pad_value=0)  # [B,n,r,query-chunk,query-window,F|d_k]
-  chunk_key_sequence('keys', pad_value=0)  # [B,n,r,key-chunk,key-window,F|d_k]
-  chunk_key_sequence('values', pad_value=0)  # [B,n,r,key-chunk,key-window,F|d_v]
+  chunk_query_sequence('queries', pad_value=0.0)  # [B,n,r,query-chunk,query-window,F|d_k]
+  chunk_key_sequence('keys', pad_value=0.0)  # [B,n,r,key-chunk,key-window,F|d_k]
+  chunk_key_sequence('values', pad_value=0.0)  # [B,n,r,key-chunk,key-window,F|d_v]
 
   # Compute chunk alignment from query chunks to a fixed-sized set of key chunks
   d[output + '_query_chunk_alignment_center'] = {
@@ -232,13 +232,13 @@ def add_lsh_attention_layer(
 
   # Undo chunking and undo sorting
   d[output + '_sorted_round_output'] = {
-    'class': 'merge_dims', 'axes': ['stag:query-chunk', 'stag:query-window'],
+    'class': 'merge_dims', 'axes': ['stag:query-chunk', 'stag:query-window'], 'keep_order': True,
     'from': [output + '_sorted_chunked_round_output']}  # [B,n,r,sorted-query-time=query-chunk*query-window,F|d_v]
   d[output + '_round_output'] = {
     'class': 'gather', 'from': [output + '_sorted_round_output'], 'axis': 'T',
     'position': output + '_queries_sort_indices'}  # [B,n,r,query-time,F|d_v]
   d[output + '_sorted_energy_logsumexp'] = {
-    'class': 'merge_dims', 'axes': ['stag:query-chunk', 'stag:query-window'],
+    'class': 'merge_dims', 'axes': ['stag:query-chunk', 'stag:query-window'], 'keep_order': True,
     'from': [output + '_sorted_chunked_energy_logsumexp']}  # [ B,n,r,sorted-query-time=query-chunk*query-window]
   d[output + '_energy_logsumexp'] = {
     'class': 'gather', 'from': [output + '_sorted_energy_logsumexp'], 'axis': 'T',
