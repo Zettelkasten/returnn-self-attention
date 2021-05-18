@@ -96,10 +96,10 @@ def add_lsh_attention_layer(
     ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
   apply_lsh_hash_gen(
     d, input=queries_input, hash_gen_input=output + '_hash_gen', output=output + '_queries_hashed',
-    time_axis=query_time_axis)  # [B,query-time,n,r] :: d_h
+    time_axis=query_time_axis, hash_mask_value=hash_mask_value)  # [B,query-time,n,r] :: d_h
   apply_lsh_hash_gen(
     d, input=keys_input, hash_gen_input=output + '_hash_gen', output=output + '_keys_hashed',
-    time_axis=key_time_axis)  # [B,key-time,n,r] :: d_h
+    time_axis=key_time_axis, hash_mask_value=hash_mask_value)  # [B,key-time,n,r] :: d_h
 
   # Compute a permutation by looking at the unsorted hashes
   d[output + '_sorted_queries_orig_indices'] = {
@@ -163,8 +163,10 @@ def add_lsh_attention_layer(
   d[output + '_query_chunk_alignment_unbounded'] = {
     'class': 'combine', 'from': [output + '_query_chunk_alignment_center', output + '_query_chunk_alignment_offset'],
     'kind': 'add'}  # [B,n,r,query-chunk,key-chunk-offset] :: key-chunk
-  d[output + '_key_chunk_count'] = {
+  d[output + '_key_chunk_count_individual'] = {
     'class': 'length', 'from': [output + '_sorted_chunked_keys']}  # [B]
+  d[output + '_key_chunk_count'] = {
+    'class': 'reduce', 'mode': 'max', 'from': [output + '_key_chunk_count_individual'], 'axis': 'B'}  # []
   d[output + '_query_chunk_alignment'] = {
     'class': 'eval', 'from': [output + '_query_chunk_alignment_unbounded', output + '_key_chunk_count'],
     'eval': 'tf.math.floormod(source(0), source(1))'}  # [B,n,r,query-chunk,key-chunk-offset] :: key-chunk
@@ -203,18 +205,45 @@ def add_lsh_attention_layer(
     d[output + '_sorted_chunked_mask'] = {
       'class': 'copy', 'from': masking_layers_from}  # [B,n,r,query-chunk,query-window,stacked-key-window]
 
-  assert mask_current is not True
+  # Compute chunked small mask (note: True means a value should be masked away)
+  small_masking_layers_from = [output + '_sorted_chunked_small_mask_invalid_query_position']
+  # We never want the attention weights to be NaN for any query (even for unmasked queries),
+  # and thus need to have at least one masked key for every query.
+  # Otherwise, the gradients will be NaN.
+  # We ensure this by masking all energies with a small (finite) number.
+  d[output + '_sorted_chunked_small_mask_invalid_query_position'] = {
+    'class': 'compare', 'from': [output + '_sorted_chunked_queries_hashed'],
+    'value': hash_mask_value, 'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  if mask_current:
+    d[output + '_sorted_chunked_small_mask_current'] = {
+      'class': 'compare',
+      'from': [output + '_sorted_chunked_queries_orig_indices', output + '_sorted_chunked_stacked_keys_orig_indices'],
+      'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+    small_masking_layers_from.append(output + '_sorted_chunked_small_mask_current')
+  if len(small_masking_layers_from) > 1:
+    d[output + '_sorted_chunked_small_mask'] = {
+      'class': 'compare', 'from': small_masking_layers_from,
+      'kind': 'logical_or'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  else:
+    d[output + '_sorted_chunked_small_mask'] = {
+      'class': 'copy', 'from': small_masking_layers_from}  # [B,n,r,query-chunk,query-window,stacked-key-window]
 
   # Compute chunked energy by comparing chunked queries and keys for each query chunk
-  d[output + '_sorted_chunked_energy_unmasked'] = {
+  d[output + '_sorted_chunked_energy_unmasked1'] = {
     'class': 'dot', 'red1': 'static:-1', 'red2': 'static:-1',
     'var1': 'stag:query-window', 'var2': 'stag:stacked-key-window',
     'from': [output + '_sorted_chunked_queries', output + '_sorted_chunked_stacked_keys'],
     'debug': True}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-  d[output + '_sorted_chunked_energy'] = {
+  d[output + '_sorted_chunked_energy_unmasked2'] = {
     'class': 'switch', 'condition': output + '_sorted_chunked_mask',
-    'true_from': output + '_sorted_chunked_energy_unmasked',
+    'true_from': output + '_sorted_chunked_energy_unmasked1',
     'false_from': float('-inf')}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  d[output + '_sorted_chunked_energy'] = {
+    'class': 'switch', 'condition': output + '_sorted_chunked_small_mask',
+    'true_from': small_mask_value,
+    'false_from': output + '_sorted_chunked_energy_unmasked2'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+
+  # Compute attention output of each round
   d[output + '_sorted_chunked_energy_logsumexp'] = {
     'class': 'reduce', 'mode': 'logsumexp', 'axis': 'stag:stacked-key-window',
     'from': [output + '_sorted_chunked_energy']}  # [B,n,r,query-chunk,query-window]
@@ -224,8 +253,6 @@ def add_lsh_attention_layer(
   d[output + '_sorted_chunked_weights_drop'] = {
     'class': 'dropout', 'dropout_noise_shape': {'*': None}, 'from': [output + '_sorted_chunked_weights'],
     'dropout': dropout}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-
-  # Compute attention output of each round
   d[output + '_sorted_chunked_round_output'] = {
     'class': 'dot', 'red1': 'stag:stacked-key-window', 'red2': 'stag:stacked-key-window',
     'var1': 'stag:query-window', 'var2': 'static:-1', 'debug': True,
@@ -274,8 +301,9 @@ def add_lsh_attention_layer(
       '_sorted_queries_hashed', '_sorted_keys_hashed', '_sorted_chunked_keys_hashed',
       '_query_chunk_alignment',
       '_sorted_chunked_queries_orig_indices', '_sorted_chunked_stacked_keys_orig_indices',
-      '_sorted_chunked_mask',
-      '_sorted_chunked_energy_unmasked',
+      '_sorted_chunked_stacked_keys_hashed', '_sorted_chunked_mask_valid_key_position',
+      '_sorted_chunked_mask', '_sorted_chunked_small_mask',
+      '_sorted_chunked_energy_unmasked1', '_sorted_chunked_energy_unmasked2',
       '_sorted_chunked_energy',
       '_sorted_chunked_weights',
       '_sorted_chunked_round_output',
