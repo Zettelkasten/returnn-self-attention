@@ -133,9 +133,12 @@ def add_lsh_attention_layer(
   stack_chunked_key_sequence('keys_hashed')  # [B,n,r,query-chunk,stacked-key-window] :: d_h
 
   # Sort the queries, keys, values by applying the permutation
-  d[output + '_sorted_queries'] = {
+  d[output + '_sorted_queries_unscaled'] = {
     'class': 'gather', 'from': [queries_input], 'axis': query_time_axis,
     'position': output + '_sorted_queries_orig_indices'}  # [B,sorted-query-time,n,r,F|d_k]
+  d[output + '_sorted_queries'] = {
+    'class': 'eval', 'eval': '%s * source(0)' % (key_dim ** -0.5),
+    'from': [output + '_sorted_queries_unscaled']}  # [B,sorted-query-time,n,r,F|d_k]
   d[output + '_sorted_keys'] = {
     'class': 'gather', 'from': [keys_input], 'axis': key_time_axis,
     'position': output + '_sorted_keys_orig_indices'}  # [B,sorted-key-time,n,r,F|d_k]
