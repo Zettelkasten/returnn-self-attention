@@ -267,8 +267,20 @@ def add_lsh_attention_layer(
   if debug_print:
     for name in [output + n for n in [
       '_keys_hashed', '_queries_hashed',
-      '_sorted_queries_orig_indices', '_sorted_keys_orig_indices',
-      '_query_chunk_alignment']]:
+      '_sorted_queries_orig_indices', '_sorted_keys_orig_indices', '_queries_sort_indices',
+      '_sorted_queries', '_sorted_keys', '_sorted_values',
+      '_sorted_chunked_queries', '_sorted_chunked_keys',
+      '_sorted_chunked_stacked_keys', '_sorted_chunked_stacked_values',
+      '_sorted_queries_hashed', '_sorted_keys_hashed', '_sorted_chunked_keys_hashed',
+      '_query_chunk_alignment',
+      '_sorted_chunked_queries_orig_indices', '_sorted_chunked_stacked_keys_orig_indices',
+      '_sorted_chunked_mask',
+      '_sorted_chunked_energy_unmasked',
+      '_sorted_chunked_energy',
+      '_sorted_chunked_weights',
+      '_sorted_chunked_round_output',
+      '_att_all']]:
+      assert name in d
       d[name + '_orig'] = d[name]
       d[name] = {'class': 'print', 'from': [name + '_orig']}
       # d[name + '_print'] = {
