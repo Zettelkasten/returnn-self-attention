@@ -172,27 +172,28 @@ def _test_lsh_self_attention_hashing(
       key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, chunk_size=chunk_size, chunks_before=chunks_before,
       chunks_after=chunks_after,
       mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False)
-    # Now we override lsh_kq, lsh_value and lsh_kq_hash with our own inputs
+    # Now we override the keys/queries, lsh_value and lsh_kq_hash with our own inputs
     def get_kqv_sequence(self, source):
       assert source(0, as_data=True).shape == (None, num_heads, key_dim)
       return tf.constant(kqv_sequence)
     def get_hash_sequence(self, source):
       assert source(0, as_data=True).shape == (num_heads, num_rounds, None)
       return tf.constant(hash_sequence)
-    net_dict["lsh_kq_original"], net_dict["lsh_value_original"] = net_dict["lsh_kq"], net_dict["lsh_value"]
-    net_dict["lsh_kq_hash_original"] = net_dict["lsh_kq_hash"]
-    net_dict["lsh_kq"] = {"class": "eval", "from": "lsh_kq_original", "eval": get_kqv_sequence}
+    net_dict["lsh_kq_original"], net_dict["lsh_value_original"] = net_dict["lsh_query"], net_dict["lsh_value"]
+    net_dict["lsh_query_hash_original"] = net_dict["lsh_queries_hashed"]
+    net_dict["lsh_query"] = {"class": "eval", "from": "lsh_kq_original", "eval": get_kqv_sequence}
     net_dict["lsh_value"] = {"class": "eval", "from": "lsh_kq_original", "eval": get_kqv_sequence}
-    net_dict["lsh_kq_hash"] = {"class": "eval", "from": "lsh_kq_hash_original", "eval": get_hash_sequence}
+    net_dict["lsh_queries_hashed"] = {"class": "eval", "from": "lsh_query_hash_original", "eval": get_hash_sequence}
+    net_dict["lsh_keys_hashed"] = {"class": "copy", "from": "lsh_queries_hashed"}
 
     config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
     config.update(dict(num_inputs=num_heads * key_dim, num_outputs=num_heads * value_dim))
     network = TFNetwork(config=config, train_flag=True)
     network.construct_from_dict(net_dict)
 
-    assert_equal(network.get_layer("lsh_kq").output.shape, (None, num_heads, key_dim))  # [B,T,H,F]
+    assert_equal(network.get_layer("lsh_query").output.shape, (None, num_heads, key_dim))  # [B,T,H,F]
     assert_equal(network.get_layer("lsh_value").output.shape, (None, num_heads, value_dim))  # [B,T,H,F]
-    assert_equal(network.get_layer("lsh_kq_hash").output.shape, (num_heads, num_rounds, None))  # [B,H,R,T]
+    assert_equal(network.get_layer("lsh_queries_hashed").output.shape, (num_heads, num_rounds, None))  # [B,H,R,T]
     assert_equal(network.get_layer("lsh_output").output.shape, (num_heads, None, value_dim))  # [B,H,T,F]
     session.run(tf_compat.v1.global_variables_initializer())
     feed_dict = {
