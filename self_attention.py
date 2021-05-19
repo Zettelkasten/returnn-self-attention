@@ -43,6 +43,17 @@ class NameAxisLayer(_ConcatInputLayer):
     for ax, descr in zip(axis, description):
       if isinstance(ax, int):
         data = data.copy_as_batch_major()
+      if isinstance(ax, str) and '|' in ax:
+        possible_axes = ax.split('|')
+        found_ax = None
+        for possible_ax in possible_axes:
+          try:
+            found_ax = data.get_axis_from_description(possible_ax)
+            break
+          except:
+            continue
+        assert found_ax is not None, '%r: axis %r not found in %r' % (self, ax, data)
+        ax = found_ax
       if isinstance(ax, str) and len(ax) >= 3 and ax[-2] == '+':
         ax_offset = int(ax[-1])
         ax = ax[:-2]
