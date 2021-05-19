@@ -82,13 +82,11 @@ def add_lsh_attention_layer(
       'axis': 'stag:key-chunk'}  # [B,n,r,query-chunk,key-chunk-offset,key-window,F]
     d[output + '_sorted_chunked_stacked_%s_unnamed' % name] = {
       'class': 'merge_dims', 'from': [output + '_sorted_chunked_stacked_%s_unflattened' % name], 'keep_order': True,
-      'axes': ['stag:key-chunk-offset', 'stag:key-window']}  # [B,n,r,query-chunk,key-chunk-offset*key-window,F]
+      'axes': ['stag:key-window', 'stag:key-chunk-offset']}  # [B,n,r,query-chunk,key-window*key-chunk-offset,F]
     d[output + '_sorted_chunked_stacked_%s' % name] = {
       'class': 'name_axis', 'from': [output + '_sorted_chunked_stacked_%s_unnamed' % name],
       'axis': 'stag:query-chunk+1',
       'description': 'stacked-key-window'}  # [B,n,r,query-chunk,stacked-key-window,F]
-
-  assert allow_duplicate_attention, 'not implemented'
 
   # Hash the queries and keys
   make_lsh_hash_gen(
@@ -154,7 +152,7 @@ def add_lsh_attention_layer(
   # Compute chunk alignment from query chunks to a fixed-sized set of key chunks
   d[output + '_query_chunk_alignment_center'] = {
     'class': 'range_in_axis', 'axis': 'stag:query-chunk', 'keepdims': False,
-    'from': [output + '_sorted_chunked_queries']}  # [B,n,r,query-chunk] :: key-chunk
+    'from': [output + '_sorted_chunked_queries']}  # [query-chunk] :: key-chunk
   d[output + '_query_chunk_alignment_offset_unnamed'] = {
     'class': 'range', 'start': -key_chunks_before, 'delta': 1, 'limit': key_chunks_after + 1}  # [key-chunk-offset]
   d[output + '_query_chunk_alignment_offset'] = {
@@ -162,21 +160,46 @@ def add_lsh_attention_layer(
     'description': 'key-chunk-offset'}  # [key-chunk-offset]
   d[output + '_query_chunk_alignment_unbounded'] = {
     'class': 'combine', 'from': [output + '_query_chunk_alignment_center', output + '_query_chunk_alignment_offset'],
-    'kind': 'add'}  # [B,n,r,query-chunk,key-chunk-offset] :: key-chunk
+    'kind': 'add'}  # [query-chunk,key-chunk-offset] :: key-chunk
   d[output + '_key_chunk_count_individual'] = {
     'class': 'length', 'from': [output + '_sorted_chunked_keys']}  # [B]
   d[output + '_key_chunk_count'] = {
     'class': 'reduce', 'mode': 'max', 'from': [output + '_key_chunk_count_individual'], 'axis': 'B'}  # []
   d[output + '_query_chunk_alignment'] = {
     'class': 'eval', 'from': [output + '_query_chunk_alignment_unbounded', output + '_key_chunk_count'],
-    'eval': 'tf.math.floormod(source(0), source(1))'}  # [B,n,r,query-chunk,key-chunk-offset] :: key-chunk
+    'eval': 'tf.math.floormod(source(0), source(1))'}  # [query-chunk,key-chunk-offset] :: key-chunk
+
+  # Compute chunk alignment duplicate mask: mask[i] is true iff alignment[j] != alignment[i] for all j < i
+  d[output + '_query_chunk_alignment_other'] = {
+    'class': 'name_axis', 'from': [output + '_query_chunk_alignment'], 'axis': 'stag:key-chunk-offset',
+    'description': 'other-key-chunk-offset'}  # [query-chunk,other-key-chunk-offset] :: key-chunk
+  d[output + '_query_chunk_alignment_indices'] = {
+    'class': 'range_in_axis', 'from': [output + '_query_chunk_alignment'], 'axis': 'stag:key-chunk-offset',
+    'keepdims': False}  # [key-chunk-offset]
+  d[output + '_query_chunk_alignment_other_indices'] = {
+    'class': 'range_in_axis', 'from': [output + '_query_chunk_alignment_other'], 'axis': 'stag:other-key-chunk-offset',
+    'keepdims': False}  # [other-key-chunk-offset]
+  d[output + '_query_chunk_alignment_compare'] = {
+    'class': 'compare', 'from': [output + '_query_chunk_alignment', output + '_query_chunk_alignment_other'],
+    'kind': 'not_equal'}  # [query-chunk,key-chunk-offset,other-key-chunk-offset]
+  d[output + '_query_chunk_alignment_left_only'] = {
+    'class': 'compare',
+    'from': [output + '_query_chunk_alignment_indices', output + '_query_chunk_alignment_other_indices'],
+    'kind': 'less_equal'}  # [key-chunk-offset,other-key-chunk-offset]
+  d[output + '_query_chunk_alignment_compare_left_only'] = {
+    'class': 'compare',
+    'from': [output + '_query_chunk_alignment_compare', output + '_query_chunk_alignment_left_only'],
+    'kind': 'logical_or'}  # [query-chunk,key-chunk-offset,other-key-chunk-offset]
+  d[output + '_query_chunk_alignment_duplicate_mask'] = {
+    'class': 'reduce', 'mode': 'all', 'from': [output + '_query_chunk_alignment_compare_left_only'],
+    'axis': 'stag:other-key-chunk-offset'}  # [query-chunk,key-chunk-offset]
 
   # Collect stacked key and value chunks
   stack_chunked_key_sequence('keys')  # [B,n,r,query-chunk,stacked-key-window,F|d_k]
   stack_chunked_key_sequence('values')  # [B,n,r,query-chunk,stacked-key-window,F|d_v]
 
   # Compute chunked masking
-  masking_layers_from = []
+  masking_layers_from = [output + '_sorted_chunked_mask_key_chunk_duplicates']
   if past_only:
     d[output + '_sorted_chunked_mask_past_only'] = {
       'class': 'compare',
@@ -197,6 +220,15 @@ def add_lsh_attention_layer(
       'from': [output + '_sorted_chunked_stacked_keys_hashed'], 'value': hash_mask_value,
       'kind': 'not_equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
     masking_layers_from.append(output + '_sorted_chunked_mask_valid_key_position')
+  # _query_chunk_alignment
+  d[output + '_sorted_chunked_mask_key_chunk_duplicates_unnamed'] = {
+    'class': 'repeat', 'from': [output + '_query_chunk_alignment_duplicate_mask'],
+    'repetitions': key_chunk_size, 'axis': 'stag:key-chunk-offset'}  # [B,n,r,query-chunk,key-chunk-offset*key-window]
+  d[output + '_sorted_chunked_mask_key_chunk_duplicates'] = {
+    'class': 'name_axis', 'from': [output + '_sorted_chunked_mask_key_chunk_duplicates_unnamed'],
+    'axis': 'stag:repeated|stag:key-chunk-offset',
+    'description': 'stacked-key-window'}  # [B,n,r,query-chunk,stacked-key-window]
+  assert num_rounds == 1 or allow_duplicate_attention, 'allow_duplicate_attention=False for multi round not implemented'
   if len(masking_layers_from) > 1:
     d[output + '_sorted_chunked_mask'] = {
       'class': 'compare', 'from': masking_layers_from,
@@ -302,6 +334,7 @@ def add_lsh_attention_layer(
       '_query_chunk_alignment',
       '_sorted_chunked_queries_orig_indices', '_sorted_chunked_stacked_keys_orig_indices',
       '_sorted_chunked_stacked_keys_hashed', '_sorted_chunked_mask_valid_key_position',
+      '_query_chunk_alignment_duplicate_mask', '_sorted_chunked_mask_key_chunk_duplicates',
       '_sorted_chunked_mask', '_sorted_chunked_small_mask',
       '_sorted_chunked_energy_unmasked1', '_sorted_chunked_energy_unmasked2',
       '_sorted_chunked_energy',
