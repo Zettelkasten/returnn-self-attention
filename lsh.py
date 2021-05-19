@@ -82,7 +82,7 @@ def add_lsh_attention_layer(
       'axis': 'stag:key-chunk'}  # [B,n,r,query-chunk,key-chunk-offset,key-window,F]
     d[output + '_sorted_chunked_stacked_%s_unnamed' % name] = {
       'class': 'merge_dims', 'from': [output + '_sorted_chunked_stacked_%s_unflattened' % name], 'keep_order': True,
-      'axes': ['stag:key-window', 'stag:key-chunk-offset']}  # [B,n,r,query-chunk,key-window*key-chunk-offset,F]
+      'axes': ['stag:key-chunk-offset', 'stag:key-window']}  # [B,n,r,query-chunk,key-chunk-offset*key-window,F]
     d[output + '_sorted_chunked_stacked_%s' % name] = {
       'class': 'name_axis', 'from': [output + '_sorted_chunked_stacked_%s_unnamed' % name],
       'axis': 'stag:query-chunk+1',
@@ -333,7 +333,7 @@ def add_lsh_attention_layer(
       '_sorted_queries_hashed', '_sorted_keys_hashed', '_sorted_chunked_keys_hashed',
       '_query_chunk_alignment',
       '_sorted_chunked_queries_orig_indices', '_sorted_chunked_stacked_keys_orig_indices',
-      '_sorted_chunked_stacked_keys_hashed', '_sorted_chunked_mask_valid_key_position',
+      '_sorted_chunked_stacked_keys_hashed',
       '_query_chunk_alignment_duplicate_mask', '_sorted_chunked_mask_key_chunk_duplicates',
       '_sorted_chunked_mask', '_sorted_chunked_small_mask',
       '_sorted_chunked_energy_unmasked1', '_sorted_chunked_energy_unmasked2',
