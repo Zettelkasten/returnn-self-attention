@@ -181,30 +181,30 @@ def add_lsh_attention_layer(
     'keepdims': False}  # [other-key-chunk-offset]
   d[output + '_query_chunk_alignment_compare'] = {
     'class': 'compare', 'from': [output + '_query_chunk_alignment', output + '_query_chunk_alignment_other'],
-    'kind': 'not_equal'}  # [query-chunk,key-chunk-offset,other-key-chunk-offset]
+    'kind': 'equal'}  # [query-chunk,key-chunk-offset,other-key-chunk-offset]
   d[output + '_query_chunk_alignment_left_only'] = {
     'class': 'compare',
     'from': [output + '_query_chunk_alignment_indices', output + '_query_chunk_alignment_other_indices'],
-    'kind': 'less_equal'}  # [key-chunk-offset,other-key-chunk-offset]
+    'kind': 'greater'}  # [key-chunk-offset,other-key-chunk-offset]
   d[output + '_query_chunk_alignment_compare_left_only'] = {
-    'class': 'compare',
+    'class': 'combine',
     'from': [output + '_query_chunk_alignment_compare', output + '_query_chunk_alignment_left_only'],
-    'kind': 'logical_or'}  # [query-chunk,key-chunk-offset,other-key-chunk-offset]
+    'kind': 'logical_and'}  # [query-chunk,key-chunk-offset,other-key-chunk-offset]
   d[output + '_query_chunk_alignment_duplicate_mask'] = {
-    'class': 'reduce', 'mode': 'all', 'from': [output + '_query_chunk_alignment_compare_left_only'],
+    'class': 'reduce', 'mode': 'any', 'from': [output + '_query_chunk_alignment_compare_left_only'],
     'axis': 'stag:other-key-chunk-offset'}  # [query-chunk,key-chunk-offset]
 
   # Collect stacked key and value chunks
   stack_chunked_key_sequence('keys')  # [B,n,r,query-chunk,stacked-key-window,F|d_k]
   stack_chunked_key_sequence('values')  # [B,n,r,query-chunk,stacked-key-window,F|d_v]
 
-  # Compute chunked masking
+  # Compute chunked masking (True = mask away by setting to -inf)
   masking_layers_from = [output + '_sorted_chunked_mask_key_chunk_duplicates']
   if past_only:
     d[output + '_sorted_chunked_mask_past_only'] = {
       'class': 'compare',
       'from': [output + '_sorted_chunked_queries_orig_indices', output + '_sorted_chunked_stacked_keys_orig_indices'],
-      'kind': 'greater_equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+      'kind': 'less'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
     masking_layers_from.append(output + '_sorted_chunked_mask_past_only')
   if mask_different_hashes:
     # Masking valid positions is not necessary in this case as invalid positions will be masked with a special
@@ -212,13 +212,13 @@ def add_lsh_attention_layer(
     d[output + '_sorted_chunked_mask_matching_hash'] = {
       'class': 'compare',
       'from': [output + '_sorted_chunked_queries_hashed', output + '_sorted_chunked_stacked_keys_hashed'],
-      'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+      'kind': 'not_equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
     masking_layers_from.append(output + '_sorted_chunked_mask_matching_hash')
   else:
     d[output + '_sorted_chunked_mask_valid_key_position'] = {
       'class': 'compare',
       'from': [output + '_sorted_chunked_stacked_keys_hashed'], 'value': hash_mask_value,
-      'kind': 'not_equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+      'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
     masking_layers_from.append(output + '_sorted_chunked_mask_valid_key_position')
   # _query_chunk_alignment
   d[output + '_sorted_chunked_mask_key_chunk_duplicates_unnamed'] = {
@@ -231,13 +231,13 @@ def add_lsh_attention_layer(
   assert num_rounds == 1 or allow_duplicate_attention, 'allow_duplicate_attention=False for multi round not implemented'
   if len(masking_layers_from) > 1:
     d[output + '_sorted_chunked_mask'] = {
-      'class': 'compare', 'from': masking_layers_from,
-      'kind': 'logical_and'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+      'class': 'combine', 'from': masking_layers_from,
+      'kind': 'logical_or'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
   else:
     d[output + '_sorted_chunked_mask'] = {
       'class': 'copy', 'from': masking_layers_from}  # [B,n,r,query-chunk,query-window,stacked-key-window]
 
-  # Compute chunked small mask (note: True means a value should be masked away)
+  # Compute chunked small mask (True = mask away by setting to small_mask_value)
   small_masking_layers_from = [output + '_sorted_chunked_small_mask_invalid_query_position']
   # We never want the attention weights to be NaN for any query (even for unmasked queries),
   # and thus need to have at least one masked key for every query.
@@ -254,7 +254,7 @@ def add_lsh_attention_layer(
     small_masking_layers_from.append(output + '_sorted_chunked_small_mask_current')
   if len(small_masking_layers_from) > 1:
     d[output + '_sorted_chunked_small_mask'] = {
-      'class': 'compare', 'from': small_masking_layers_from,
+      'class': 'combine', 'from': small_masking_layers_from,
       'kind': 'logical_or'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
   else:
     d[output + '_sorted_chunked_small_mask'] = {
@@ -268,8 +268,8 @@ def add_lsh_attention_layer(
     'debug': True}  # [B,n,r,query-chunk,query-window,stacked-key-window]
   d[output + '_sorted_chunked_energy_unmasked2'] = {
     'class': 'switch', 'condition': output + '_sorted_chunked_mask',
-    'true_from': output + '_sorted_chunked_energy_unmasked1',
-    'false_from': float('-inf')}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+    'true_from': float('-inf'),
+    'false_from': output + '_sorted_chunked_energy_unmasked1'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
   d[output + '_sorted_chunked_energy'] = {
     'class': 'switch', 'condition': output + '_sorted_chunked_small_mask',
     'true_from': small_mask_value,
@@ -334,14 +334,14 @@ def add_lsh_attention_layer(
       '_query_chunk_alignment',
       '_sorted_chunked_queries_orig_indices', '_sorted_chunked_stacked_keys_orig_indices',
       '_sorted_chunked_stacked_keys_hashed',
-      '_query_chunk_alignment_duplicate_mask', '_sorted_chunked_mask_key_chunk_duplicates',
+      '_query_chunk_alignment_duplicate_mask',
       '_sorted_chunked_mask', '_sorted_chunked_small_mask',
       '_sorted_chunked_energy_unmasked1', '_sorted_chunked_energy_unmasked2',
       '_sorted_chunked_energy',
       '_sorted_chunked_weights',
       '_sorted_chunked_round_output',
-      '_att_all']]:
-      assert name in d
+      '_att_all']] + masking_layers_from + small_masking_layers_from:
+      assert name in d and name + '_orig' not in d
       d[name + '_orig'] = d[name]
       d[name] = {'class': 'print', 'from': [name + '_orig']}
       # d[name + '_print'] = {
