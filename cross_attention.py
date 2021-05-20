@@ -140,10 +140,10 @@ def add_full_lsh_cross_attention_layer(
     ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
   apply_lsh_hash_gen(
     d, input=output + '_query', hash_gen_input='base:' + output + '_hash_gen', output=output + '_query_hash',
-    time_axis=query_time_axis)  # [B,n,r,query-T?] :: d_h
+    time_axis=query_time_axis, hash_mask_value=None)  # [B,n,r,query-T?] :: d_h
   apply_lsh_hash_gen(
     db, input=output + '_key', hash_gen_input=output + '_hash_gen', output=output + '_key_hash',
-    time_axis=key_time_axis)  # [B,n,r,key-T] :: d_h
+    time_axis=key_time_axis, hash_mask_value=None)  # [B,n,r,key-T] :: d_h
   assert num_rounds == 1, 'not implemented yet otherwise'
 
   # build and apply additional energy mask

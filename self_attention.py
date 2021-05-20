@@ -227,7 +227,7 @@ def apply_lsh_hash_gen(d, input, hash_gen_input, output, time_axis, hash_mask_va
   :param str hash_gen_input:
   :param str output:
   :param str time_axis:
-  :param int hash_mask_value:
+  :param int|None hash_mask_value: or None if you do not want masking
   """
   d[output + '_linear'] = {
     'class': 'dot', 'from': [hash_gen_input, input], 'debug': True,
@@ -236,12 +236,13 @@ def apply_lsh_hash_gen(d, input, hash_gen_input, output, time_axis, hash_mask_va
   d[output + '_sparse'] = {
     'class': 'reduce', 'mode': 'argmax', 'axes': 'static:-1',
     'from': [output + '_linear']}  # [B,T|classes?,n,r] :: d_h
-  d[output + '_unmasked'] = {
+  d[output + '_unmasked' if hash_mask_value is not None else output] = {
     'class': 'reinterpret_data', 'from': [output + '_sparse'],
     'set_sparse': False, 'set_axes': {'F': None}}  # [B,T|classes?,n,r] :: d_h
-  d[output] = {
-    'class': 'seq_len_mask', 'from': [output + '_unmasked'], 'axis': time_axis,
-    'mask_value': hash_mask_value}  # [B,T|classes?,n,r] :: d_h
+  if hash_mask_value is not None:
+    d[output] = {
+      'class': 'seq_len_mask', 'from': [output + '_unmasked'], 'axis': time_axis,
+      'mask_value': hash_mask_value}  # [B,T|classes?,n,r] :: d_h
 
 
 def legacy_add_lsh_self_attention_layer(
@@ -437,7 +438,7 @@ def legacy_add_lsh_self_attention_layer(
     ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
   apply_lsh_hash_gen(
     d, input=output + '_kq', hash_gen_input=output + '_hash_gen', output=output + '_kq_hash',
-    time_axis=time_axis)  # [B,T|classes?,n,r] :: d_h
+    time_axis=time_axis, hash_mask_value=None)  # [B,T|classes?,n,r] :: d_h
 
   # Accumulate all past hashes
   d[output + '_kq_accum_hash_unsorted_unmasked'] = {
