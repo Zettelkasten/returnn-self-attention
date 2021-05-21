@@ -16,32 +16,9 @@ def _query_key_time_default(query_time_axis, key_time_axis):
   return query_time_axis, key_time_axis
 
 
-def add_vanilla_cross_attention_layer(
-  d, db, input, keys_input, output, query_time_axis=None, key_time_axis=None,
-  num_heads=8, key_dim=64, value_dim=64, dropout=0.0,
-  ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0):
-  """
-  Add a cross-attention layer.
-
-  :param dict[str, Any] d:
-  :param dict[str, Any] db:
-  :param str input:
-  :param str keys_input:
-  :param str output:
-  :param None|str query_time_axis:
-  :param None|str key_time_axis:
-  :param int num_heads:
-  :param int key_dim:
-  :param int value_dim:
-  :param float dropout:
-  :param str ff_init:
-  """
-  query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
-
-  assert keys_input.startswith('base:')
-  keys_input = keys_input[len('base:'):]
-
-  # Create query, key and value
+def _make_cross_attention_qkv(
+  d, db, input, keys_input, output, num_heads=8, key_dim=64, value_dim=64,
+  ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0):
   d[output + '_query0'] = {
     'class': 'linear', 'activation': None, 'with_bias': False, 'from': [input],
     'n_out': num_heads * key_dim, 'forward_weights_init': ff_init}  # [B,query-T?,F|n*d_k]
@@ -69,6 +46,37 @@ def add_vanilla_cross_attention_layer(
   db[output + '_value'] = {
     'class': 'name_axis', 'axis': 'static:-2', 'description': 'att-heads',
     'from': [output + '_value_unnamed']}  # [B,key-T,n,F|d_v]
+
+
+def add_vanilla_cross_attention_layer(
+  d, db, input, keys_input, output, query_time_axis=None, key_time_axis=None,
+  num_heads=8, key_dim=64, value_dim=64, dropout=0.0,
+  ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0):
+  """
+  Add a cross-attention layer.
+
+  :param dict[str, Any] d:
+  :param dict[str, Any] db:
+  :param str input:
+  :param str keys_input:
+  :param str output:
+  :param None|str query_time_axis:
+  :param None|str key_time_axis:
+  :param int num_heads:
+  :param int key_dim:
+  :param int value_dim:
+  :param float dropout:
+  :param str ff_init:
+  """
+  query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
+
+  assert keys_input.startswith('base:')
+  keys_input = keys_input[len('base:'):]
+
+  # Create query, key and value
+  _make_cross_attention_qkv(
+    d=d, db=db, input=input, keys_input=keys_input, output=output, num_heads=num_heads, key_dim=key_dim,
+    value_dim=value_dim, ff_init=ff_init)
 
   # Calculate the energies + weights
   d[output + '_energy'] = {
