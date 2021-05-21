@@ -7,7 +7,7 @@ def add_lsh_attention_layer(
   num_hashes, query_chunk_size, key_chunk_size, key_chunks_before=None, key_chunks_after=None,
   ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   small_mask_value=float(-10**5),
-  past_only=None, mask_current=None, mask_different_hashes=True, allow_duplicate_attention=False,
+  past_only=None, mask_current=None, mask_different_hashes=True, fallback_mode=None, allow_duplicate_attention=False,
   debug_print=False):
   """
   Computes LSH attention for an entire sequence.
@@ -34,6 +34,10 @@ def add_lsh_attention_layer(
   :param None|bool past_only: for self attention
   :param None|bool mask_current: for self attention
   :param bool mask_different_hashes:
+  :param None|str fallback_mode: For mask_different_hashes=True, what to do when a query cannot attend to any key.
+    Possible options are:
+     - 'current' - attend to current token (default when mask_current is True)
+     - 'average_window' - average all keys within window, even if they have a different hash
   :param bool allow_duplicate_attention:
   :param bool debug_print:
   """
@@ -47,6 +51,12 @@ def add_lsh_attention_layer(
   assert key_chunks_before >= 0 and key_chunks_after >= 0
   hash_mask_value = 2 ** 31 - 1
   assert hash_mask_value > num_hashes
+  if mask_different_hashes:
+    if self_attention and fallback_mode is None:
+      fallback_mode = 'current'
+  assert (fallback_mode is None) == (not mask_different_hashes)
+  if fallback_mode is not None:
+    assert fallback_mode in {'current', 'average_window'}
 
   def chunk_query_sequence(name, pad_value):
     """
@@ -198,28 +208,33 @@ def add_lsh_attention_layer(
   stack_chunked_key_sequence('keys')  # [B,n,r,query-chunk,stacked-key-window,F|d_k]
   stack_chunked_key_sequence('values')  # [B,n,r,query-chunk,stacked-key-window,F|d_v]
 
-  # Compute chunked masking (True = mask away by setting to -inf)
-  masking_layers_from = [output + '_sorted_chunked_mask_key_chunk_duplicates']
+  # Compute chunked masking (True = mask away by setting to -inf) and small mask (True = set to small_mask_value)
+  large_masking_layers_from = [output + '_sorted_chunked_mask_key_chunk_duplicates']  # with -inf
+  small_masking_layers_from = [output + '_sorted_chunked_small_mask_invalid_query_position']  # with -10*5 or so
   if past_only:
     d[output + '_sorted_chunked_mask_past_only'] = {
       'class': 'compare',
       'from': [output + '_sorted_chunked_queries_orig_indices', output + '_sorted_chunked_stacked_keys_orig_indices'],
       'kind': 'less'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-    masking_layers_from.append(output + '_sorted_chunked_mask_past_only')
+    large_masking_layers_from.append(output + '_sorted_chunked_mask_past_only')
   if mask_different_hashes:
     # Masking valid positions is not necessary in this case as invalid positions will be masked with a special
     # hash value
-    d[output + '_sorted_chunked_mask_matching_hash'] = {
+    is_small = fallback_mode == 'average_window'
+    d[output + '_sorted_chunked%s_mask_matching_hash' % ('_small' if is_small else '')] = {
       'class': 'compare',
       'from': [output + '_sorted_chunked_queries_hashed', output + '_sorted_chunked_stacked_keys_hashed'],
       'kind': 'not_equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-    masking_layers_from.append(output + '_sorted_chunked_mask_matching_hash')
+    if fallback_mode == 'average_window':
+      small_masking_layers_from.append(output + '_sorted_chunked_small_mask_matching_hash')
+    else:
+      large_masking_layers_from.append(output + '_sorted_chunked_mask_matching_hash')
   else:
     d[output + '_sorted_chunked_mask_valid_key_position'] = {
       'class': 'compare',
       'from': [output + '_sorted_chunked_stacked_keys_hashed'], 'value': hash_mask_value,
       'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-    masking_layers_from.append(output + '_sorted_chunked_mask_valid_key_position')
+    large_masking_layers_from.append(output + '_sorted_chunked_mask_valid_key_position')
   # _query_chunk_alignment
   d[output + '_sorted_chunked_mask_key_chunk_duplicates_unnamed'] = {
     'class': 'repeat', 'from': [output + '_query_chunk_alignment_duplicate_mask'],
@@ -229,16 +244,6 @@ def add_lsh_attention_layer(
     'axis': 'stag:repeated|stag:key-chunk-offset',
     'description': 'stacked-key-window'}  # [B,n,r,query-chunk,stacked-key-window]
   assert num_rounds == 1 or allow_duplicate_attention, 'allow_duplicate_attention=False for multi round not implemented'
-  if len(masking_layers_from) > 1:
-    d[output + '_sorted_chunked_mask'] = {
-      'class': 'combine', 'from': masking_layers_from,
-      'kind': 'logical_or'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-  else:
-    d[output + '_sorted_chunked_mask'] = {
-      'class': 'copy', 'from': masking_layers_from}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-
-  # Compute chunked small mask (True = mask away by setting to small_mask_value)
-  small_masking_layers_from = [output + '_sorted_chunked_small_mask_invalid_query_position']
   # We never want the attention weights to be NaN for any query (even for unmasked queries),
   # and thus need to have at least one masked key for every query.
   # Otherwise, the gradients will be NaN.
@@ -246,12 +251,32 @@ def add_lsh_attention_layer(
   d[output + '_sorted_chunked_small_mask_invalid_query_position'] = {
     'class': 'compare', 'from': [output + '_sorted_chunked_queries_hashed'],
     'value': hash_mask_value, 'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-  if mask_current:
-    d[output + '_sorted_chunked_small_mask_current'] = {
+  if mask_current or fallback_mode == 'current':
+    # if mask_current, but fallback_mode == 'average_window', we also have to change the current pos masking.
+    is_small = fallback_mode in {'current', 'average_window'}
+    d[output + '_sorted_chunked%s_mask_current' % ('_small' if is_small else '')] = {
       'class': 'compare',
       'from': [output + '_sorted_chunked_queries_orig_indices', output + '_sorted_chunked_stacked_keys_orig_indices'],
       'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-    small_masking_layers_from.append(output + '_sorted_chunked_small_mask_current')
+    if is_small:
+      if mask_current:
+        small_masking_layers_from.append(output + '_sorted_chunked_small_mask_current')
+      else:
+        # only set to small_mask_value, if the large mask would set it to -inf.
+        d[output + '_sorted_chunked_small_mask_current_always'] = d[output + '_sorted_chunked_small_mask_current']
+        d[output + '_sorted_chunked_small_mask_current'] = {
+          'class': 'combine',
+          'from': [output + '_sorted_chunked_small_mask_current_always', output + '_sorted_chunked_mask'],
+          'kind': 'logical_and'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+    else:
+      large_masking_layers_from.append(output + '_sorted_chunked_mask_current')
+  if len(large_masking_layers_from) > 1:
+    d[output + '_sorted_chunked_mask'] = {
+      'class': 'combine', 'from': large_masking_layers_from,
+      'kind': 'logical_or'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  else:
+    d[output + '_sorted_chunked_mask'] = {
+      'class': 'copy', 'from': large_masking_layers_from}  # [B,n,r,query-chunk,query-window,stacked-key-window]
   if len(small_masking_layers_from) > 1:
     d[output + '_sorted_chunked_small_mask'] = {
       'class': 'combine', 'from': small_masking_layers_from,
@@ -340,7 +365,7 @@ def add_lsh_attention_layer(
       '_sorted_chunked_energy',
       '_sorted_chunked_weights',
       '_sorted_chunked_round_output',
-      '_att_all']] + masking_layers_from + small_masking_layers_from:
+      '_att_all']] + large_masking_layers_from + small_masking_layers_from:
       assert name in d and name + '_orig' not in d
       d[name + '_orig'] = d[name]
       d[name] = {'class': 'print', 'from': [name + '_orig']}
