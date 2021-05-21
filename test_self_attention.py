@@ -346,7 +346,7 @@ def test_vanilla_self_attention_optimize_out():
 def test_full_lsh_cross_attention_construct():
   num_heads, key_dim, value_dim = 2, 3, 3
   net_dict = {
-    'encoder': {'class': 'linear', 'n_out': 5, 'activation': None},
+    'encoder': {'class': 'linear', 'n_out': 5, 'activation': None, 'from': 'data'},
     'output': {
       'class': 'rec',
       'target': 'classes',
@@ -370,13 +370,87 @@ def test_full_lsh_cross_attention_construct():
   pprint(net_dict)
 
   with make_scope():
-    extern_data = ExternData({
+    config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
+    config.set('extern_data', {
       "data": {"dim": 7, "sparse": True},
       "classes": {"dim": 6, "sparse": True, "available_for_inference": False}})
-    net = TFNetwork(
-      extern_data=extern_data, search_flag=True, train_flag=False, eval_flag=False)
+    net = TFNetwork(config=config, search_flag=False, train_flag=True, eval_flag=False)
     net.construct_from_dict(net_dict)
     print(net.layers)
+
+
+def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
+    enc_time, dec_time, chunk_size, chunks_before, chunks_after, num_heads=2, num_hashes=6):
+  key_dim, value_dim = 3, 3
+  net_dict = {
+    'encoder': {'class': 'linear', 'n_out': 5, 'activation': None},
+    'output': {
+      'class': 'rec',
+      'target': 'classes',
+      'max_seq_len': dec_time,
+      'unit': {
+        'embed': {'class': 'linear', 'activation': None, 'from': ['prev:output'], "n_out": 7},
+        'chunked_att_att': None,
+        'full_att_att': None,
+        'output_prob': {'class': 'softmax', 'from': ['full_att_att', 'chunked_att_att'], 'target': 'classes'},
+        'output': {
+          'class': 'choice', 'beam_size': 4, 'target': 'classes', 'from': ['output_prob'], 'initial_output': 'zeros',
+          'loss': 'ce', 'is_output_layer': True},
+        "end": {'class': 'compare', 'from': ['output'], 'value': -1},  # should always be False.
+      }
+    },
+    'chunked_att': {'class': 'copy', 'from': 'output/chunked_att_att', 'is_output_layer': True},
+    'full_att': {'class': 'copy', 'from': 'output/full_att_att', 'is_output_layer': True},
+    'decision': {'class': 'decide', 'from': ['output'], 'loss': 'edit_distance', 'loss_opts': {}, 'target': 'classes'}
+  }  # type: dict[str, Any]
+
+  add_full_lsh_cross_attention_layer(
+    d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder', output='full_att',
+    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes)
+  add_lsh_cross_attention_layer(
+    d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder',
+    output='chunked_att', num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
+    key_chunk_size=chunk_size, query_chunk_size=chunk_size, key_chunks_before=chunks_before,
+    key_chunks_after=chunks_after, fallback_mode='average_window', debug_print=True)
+  net_dict['output']['unit']['chunked_att_att']['is_output_layer'] = True
+  net_dict['output']['unit']['full_att_att']['is_output_layer'] = True
+  net_dict['output']['unit']['chunked_att_query0']['reuse_params'] = 'full_att_query0'
+  net_dict['chunked_att_key0']['reuse_params'] = 'full_att_key0'
+  net_dict['chunked_att_value0']['reuse_params'] = 'full_att_value0'
+
+  with make_scope() as session:
+    config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
+    config.set('extern_data', {
+      "data": {"dim": 7, "sparse": True},
+      "classes": {"dim": 6, "sparse": True, "available_for_inference": False}})
+    net = TFNetwork(config=config, train_flag=True, search_flag=False, eval_flag=False)
+
+    feed_dict = make_feed_dict(net.extern_data.data.values(), n_time=enc_time)
+    net.construct_from_dict(net_dict)
+    full_att_layer, chunked_att_layer = net.layers['full_att'], net.layers['chunked_att']
+    assert full_att_layer.output.shape == chunked_att_layer.output.shape
+    assert full_att_layer.output.get_time_dim_tag().is_equal(chunked_att_layer.output.get_time_dim_tag())
+    session.run(tf_compat.v1.global_variables_initializer())
+
+    full_att, chunked_att = session.run(
+      [full_att_layer.output.placeholder, chunked_att_layer.output.placeholder], feed_dict=feed_dict)
+
+    print('Full LSH attention context vector:', full_att_layer.output)
+    pprint(full_att)
+    print('Chunked LSH attention context vector:', chunked_att_layer.output)
+    pprint(chunked_att)
+
+    from numpy.testing import assert_almost_equal
+    assert(not numpy.any(numpy.isnan(chunked_att)))
+    assert_almost_equal(full_att, chunked_att)
+    print("Attention context vectors are equal!")
+
+
+def test_lsh_cross_attention_equals_full_lsh_cross_attention():
+  _test_lsh_cross_attention_equals_full_lsh_cross_attention(
+    enc_time=5, dec_time=1, chunk_size=3, chunks_before=1, chunks_after=1, num_heads=1)
+  # _test_lsh_cross_attention_equals_full_lsh_cross_attention(
+  #   enc_time=15, dec_time=10, chunk_size=1, chunks_before=0, chunks_after=0)
 
 
 if __name__ == "__main__":
