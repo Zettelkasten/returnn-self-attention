@@ -165,3 +165,38 @@ def add_full_lsh_cross_attention_layer(
   d[output + '_energy'] = {
     'class': 'switch', 'condition': output + '_energy_mask',
     'true_from': output + '_energy_unmasked', 'false_from': mask_current_value}  # [B,n,query-T?,key-T]
+
+
+def add_lsh_cross_attention_layer(
+  d, db, input, keys_input, output, query_time_axis=None, key_time_axis=None, *,
+  num_heads=8, num_rounds=1, key_dim=64, value_dim=64, dropout=0.0, num_hashes, key_chunk_size, query_chunk_size,
+  key_chunks_before=None, key_chunks_after=None,
+  ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
+  small_mask_value=float(-10**5), mask_different_hashes=True, fallback_mode, allow_duplicate_attention=False,
+  debug_print=False):
+  query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
+  assert keys_input.startswith('base:')
+  keys_input = keys_input[len('base:'):]
+
+  # Create query, key and value
+  _make_cross_attention_qkv(
+    d=d, db=db, input=input, keys_input=keys_input, output=output, num_heads=num_heads, key_dim=key_dim,
+    value_dim=value_dim, ff_init=ff_init)
+
+  # Accumulate the queries
+  queries_input = output + '_query_accum'
+  d[output + '_query_accum'] = {'class': 'cum_concat', 'from': [output + '_query'], 'axis': query_time_axis}
+
+  # Apply lsh hashing for all queries
+  from lsh import add_lsh_attention_layer
+  add_lsh_attention_layer(
+    d=d, queries_input=queries_input, keys_input='base:' + output + '_key',
+    values_input='base:' + output + '_value', output=output, query_time_axis='stag:rec-history',
+    key_time_axis=key_time_axis, num_heads=num_heads, num_rounds=num_rounds, key_dim=key_dim, value_dim=value_dim,
+    dropout=dropout, num_hashes=num_hashes, query_chunk_size=query_chunk_size, key_chunk_size=key_chunk_size,
+    key_chunks_before=key_chunks_before, key_chunks_after=key_chunks_after, ff_init=ff_init,
+    small_mask_value=small_mask_value, mask_different_hashes=mask_different_hashes, fallback_mode=fallback_mode,
+    allow_duplicate_attention=allow_duplicate_attention, debug_print=debug_print)
+
+  # Select the context vector for the query we actually want
+  d[output + '_att'] = {'class': 'gather', 'from': [output + '_att_all'], 'position': ':i', 'axis': 'stag:rec-history'}
