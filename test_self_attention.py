@@ -171,7 +171,7 @@ def _test_lsh_self_attention_hashing(
       net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only, num_heads=num_heads, num_rounds=num_rounds,
       key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, chunk_size=chunk_size, chunks_before=chunks_before,
       chunks_after=chunks_after,
-      mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False)
+      mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False, debug_print=True)
     # Now we override the keys/queries, lsh_value and lsh_kq_hash with our own inputs
     def get_kqv_sequence(self, source):
       assert source(0, as_data=True).shape == (None, num_heads, key_dim)
@@ -408,7 +408,7 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
 
   add_full_lsh_cross_attention_layer(
     d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder', output='full_att',
-    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes)
+    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, debug_print=True)
   add_lsh_cross_attention_layer(
     d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder',
     output='chunked_att', num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
@@ -419,6 +419,10 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
   net_dict['output']['unit']['chunked_att_query0']['reuse_params'] = 'full_att_query0'
   net_dict['chunked_att_key0']['reuse_params'] = 'full_att_key0'
   net_dict['chunked_att_value0']['reuse_params'] = 'full_att_value0'
+  assert 'chunked_att_hash_gen_top_unnamed' in net_dict['output']['unit']
+  assert 'full_att_hash_gen_top_unnamed' in net_dict
+  net_dict['output']['unit']['chunked_att_hash_gen_top_unnamed'] = {
+    'class': 'copy', 'from': 'base:full_att_hash_gen_top_unnamed'}
 
   with make_scope() as session:
     config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
@@ -433,16 +437,23 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
     assert full_att_layer.output.shape == chunked_att_layer.output.shape
     assert full_att_layer.output.get_time_dim_tag().is_equal(chunked_att_layer.output.get_time_dim_tag())
     session.run(tf_compat.v1.global_variables_initializer())
+    assert full_att_layer.output.time_dim_axis == chunked_att_layer.output.time_dim_axis
+    time_axis = full_att_layer.output.time_dim_axis
 
-    full_att, chunked_att = session.run(
-      [full_att_layer.output.placeholder, chunked_att_layer.output.placeholder], feed_dict=feed_dict)
+    full_att, chunked_att, full_time, chunked_time = session.run(
+      [full_att_layer.output.placeholder, chunked_att_layer.output.placeholder,
+        full_att_layer.output.get_dynamic_size(time_axis), chunked_att_layer.output.get_dynamic_size(time_axis)
+      ], feed_dict=feed_dict)
 
     print('Full LSH attention context vector:', full_att_layer.output)
     pprint(full_att)
+    print('with seq lengths:', full_time)
     print('Chunked LSH attention context vector:', chunked_att_layer.output)
     pprint(chunked_att)
+    print('with seq lengths:', chunked_time)
 
     from numpy.testing import assert_almost_equal
+    assert_almost_equal(full_time, chunked_time)
     assert(not numpy.any(numpy.isnan(chunked_att)))
     assert_almost_equal(full_att, chunked_att)
     print("Attention context vectors are equal!")
@@ -450,7 +461,7 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
 
 def test_lsh_cross_attention_equals_full_lsh_cross_attention():
   _test_lsh_cross_attention_equals_full_lsh_cross_attention(
-    enc_time=5, dec_time=1, chunk_size=3, chunks_before=1, chunks_after=1, num_heads=1)
+    enc_time=5, dec_time=1, chunk_size=6, chunks_before=0, chunks_after=0, num_heads=1, num_hashes=4)
   # _test_lsh_cross_attention_equals_full_lsh_cross_attention(
   #   enc_time=15, dec_time=10, chunk_size=1, chunks_before=0, chunks_after=0)
 
