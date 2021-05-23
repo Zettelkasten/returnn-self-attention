@@ -209,8 +209,8 @@ def add_lsh_attention_layer(
   stack_chunked_key_sequence('values')  # [B,n,r,query-chunk,stacked-key-window,F|d_v]
 
   # Compute chunked masking (True = mask away by setting to -inf) and small mask (True = set to small_mask_value)
-  large_masking_layers_from = [output + '_sorted_chunked_mask_key_chunk_duplicates']  # with -inf
-  small_masking_layers_from = [output + '_sorted_chunked_small_mask_invalid_query_position']  # with -10*5 or so
+  large_masking_layers_from = []  # with -inf
+  small_masking_layers_from = []  # with -10*5 or so
   if past_only:
     d[output + '_sorted_chunked_mask_past_only'] = {
       'class': 'compare',
@@ -218,8 +218,6 @@ def add_lsh_attention_layer(
       'kind': 'less'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
     large_masking_layers_from.append(output + '_sorted_chunked_mask_past_only')
   if mask_different_hashes:
-    # Masking valid positions is not necessary in this case as invalid positions will be masked with a special
-    # hash value
     is_small = fallback_mode == 'average_window'
     d[output + '_sorted_chunked%s_mask_matching_hash' % ('_small' if is_small else '')] = {
       'class': 'compare',
@@ -229,12 +227,11 @@ def add_lsh_attention_layer(
       small_masking_layers_from.append(output + '_sorted_chunked_small_mask_matching_hash')
     else:
       large_masking_layers_from.append(output + '_sorted_chunked_mask_matching_hash')
-  else:
-    d[output + '_sorted_chunked_mask_valid_key_position'] = {
-      'class': 'compare',
-      'from': [output + '_sorted_chunked_stacked_keys_hashed'], 'value': hash_mask_value,
-      'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-    large_masking_layers_from.append(output + '_sorted_chunked_mask_valid_key_position')
+  d[output + '_sorted_chunked_mask_valid_key_position'] = {  # never.
+    'class': 'compare',
+    'from': [output + '_sorted_chunked_stacked_keys_hashed'], 'value': hash_mask_value,
+    'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  large_masking_layers_from.append(output + '_sorted_chunked_mask_valid_key_position')
   # _query_chunk_alignment
   d[output + '_sorted_chunked_mask_key_chunk_duplicates_unnamed'] = {
     'class': 'repeat', 'from': [output + '_query_chunk_alignment_duplicate_mask'],
@@ -243,6 +240,7 @@ def add_lsh_attention_layer(
     'class': 'name_axis', 'from': [output + '_sorted_chunked_mask_key_chunk_duplicates_unnamed'],
     'axis': 'stag:repeated|stag:key-chunk-offset',
     'description': 'stacked-key-window'}  # [B,n,r,query-chunk,stacked-key-window]
+  large_masking_layers_from.append(output + '_sorted_chunked_mask_key_chunk_duplicates')
   assert num_rounds == 1 or allow_duplicate_attention, 'allow_duplicate_attention=False for multi round not implemented'
   # We never want the attention weights to be NaN for any query (even for unmasked queries),
   # and thus need to have at least one masked key for every query.
@@ -251,6 +249,7 @@ def add_lsh_attention_layer(
   d[output + '_sorted_chunked_small_mask_invalid_query_position'] = {
     'class': 'compare', 'from': [output + '_sorted_chunked_queries_hashed'],
     'value': hash_mask_value, 'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  small_masking_layers_from.append(output + '_sorted_chunked_small_mask_invalid_query_position')
   if mask_current or fallback_mode == 'current':
     # if mask_current, but fallback_mode == 'average_window', we also have to change the current pos masking.
     is_small = fallback_mode in {'current', 'average_window'}
@@ -292,12 +291,12 @@ def add_lsh_attention_layer(
     'from': [output + '_sorted_chunked_queries', output + '_sorted_chunked_stacked_keys'],
     'debug': True}  # [B,n,r,query-chunk,query-window,stacked-key-window]
   d[output + '_sorted_chunked_energy_unmasked2'] = {
-    'class': 'switch', 'condition': output + '_sorted_chunked_mask',
-    'true_from': float('-inf'),
-    'false_from': output + '_sorted_chunked_energy_unmasked1'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-  d[output + '_sorted_chunked_energy'] = {
     'class': 'switch', 'condition': output + '_sorted_chunked_small_mask',
     'true_from': small_mask_value,
+    'false_from': output + '_sorted_chunked_energy_unmasked1'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  d[output + '_sorted_chunked_energy'] = {
+    'class': 'switch', 'condition': output + '_sorted_chunked_mask',
+    'true_from': float('-inf'),
     'false_from': output + '_sorted_chunked_energy_unmasked2'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
 
   # Compute attention output of each round
