@@ -64,7 +64,7 @@ def _test_lsh_self_attention_no_mask_different_hashes(
       net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only,
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
       chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
-      mask_current=mask_current, mask_different_hashes=False, allow_duplicate_attention=duplicates, debug_print=True)
+      mask_current=mask_current, mask_different_hashes=False, allow_duplicate_attention=duplicates, debug_print=False)
     add_vanilla_self_attention_layer(
       net_dict, 'data', 'vanilla', inside_rec_layer=False, past_only=past_only,
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, share_key_query=True,
@@ -174,7 +174,7 @@ def _test_lsh_self_attention_hashing(
       net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only, num_heads=num_heads, num_rounds=num_rounds,
       key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, chunk_size=chunk_size, chunks_before=chunks_before,
       chunks_after=chunks_after,
-      mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False, debug_print=True)
+      mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False, debug_print=False)
     # Now we override the keys/queries, lsh_value and lsh_kq_hash with our own inputs
     def get_kqv_sequence(self, source):
       assert source(0, as_data=True).shape == (None, num_heads, key_dim)
@@ -262,6 +262,7 @@ def test_lsh_self_attention_hashing():
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=0, past_only=True)
 
 
+@unittest.skip('multi round hashing not implemented currently')
 def test_lsh_self_attention_hashing_multi_round():
   # hash rounds do not help here, as the hash classes for all rounds are equal
   _test_lsh_self_attention_hashing_all(
@@ -411,12 +412,12 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
 
   add_full_lsh_cross_attention_layer(
     d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder', output='full_att',
-    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, debug_print=True)
+    num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, debug_print=False)
   add_lsh_cross_attention_layer(
     d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder',
     output='chunked_att', num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
     key_chunk_size=chunk_size, query_chunk_size=chunk_size, key_chunks_before=chunks_before,
-    key_chunks_after=chunks_after, fallback_mode='average_window', debug_print=True)
+    key_chunks_after=chunks_after, fallback_mode='average_window', debug_print=False)
   net_dict['output']['unit']['chunked_att_att']['is_output_layer'] = True
   net_dict['output']['unit']['full_att_att']['is_output_layer'] = True
   net_dict['output']['unit']['chunked_att_query0']['reuse_params'] = 'full_att_query0'
@@ -448,6 +449,13 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
         full_att_layer.output.get_dynamic_size(time_axis), chunked_att_layer.output.get_dynamic_size(time_axis)
       ], feed_dict=feed_dict)
 
+    # mask away things out of seq length
+    assert full_att_layer.output.batch_dim_axis == chunked_att_layer.output.batch_dim_axis == 0
+    assert full_att_layer.output.time_dim_axis == chunked_att_layer.output.time_dim_axis == 1
+    mask = numpy.arange(numpy.shape(full_att)[1]).reshape([1,-1,1]) < full_time.reshape([-1,1,1])
+    full_att = full_att * mask
+    chunked_att = chunked_att * mask
+
     print('Full LSH attention context vector:', full_att_layer.output)
     pprint(full_att)
     print('with seq lengths:', full_time)
@@ -459,12 +467,6 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
     assert_almost_equal(full_time, chunked_time)
     assert(not numpy.any(numpy.isnan(chunked_att)))
 
-    # mask away things out of seq length
-    assert full_att_layer.output.batch_dim_axis == chunked_att_layer.output.batch_dim_axis == 0
-    assert full_att_layer.output.time_dim_axis == chunked_att_layer.output.time_dim_axis == 1
-    mask = numpy.arange(numpy.shape(full_att)[1]).reshape([1,-1,1]) < full_time.reshape([-1,1,1])
-    full_att = full_att * mask
-    chunked_att = chunked_att * mask
     assert_almost_equal(full_att, chunked_att, decimal=3)
     print("Attention context vectors are equal!")
 
