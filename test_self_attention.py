@@ -1,4 +1,7 @@
 import sys
+
+from typing import Any
+
 sys.path.insert(1, '/u/petrick/software/returnn/official/')
 sys.path.insert(1, '/u/petrick/software/returnn/official/tests')
 sys.path.insert(1, '/u/petrick/lsh/playground/encoder_lsh')
@@ -469,8 +472,8 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
 def test_lsh_cross_attention_equals_full_lsh_cross_attention():
   _test_lsh_cross_attention_equals_full_lsh_cross_attention(
     enc_time=5, dec_time=1, chunk_size=6, chunks_before=0, chunks_after=0, num_heads=1, num_hashes=4)
-  # _test_lsh_cross_attention_equals_full_lsh_cross_attention(
-  #   enc_time=15, dec_time=10, chunk_size=1, chunks_before=0, chunks_after=0)
+  _test_lsh_cross_attention_equals_full_lsh_cross_attention(
+    enc_time=15, dec_time=10, chunk_size=5, chunks_before=1, chunks_after=1)
 
 
 if __name__ == "__main__":
