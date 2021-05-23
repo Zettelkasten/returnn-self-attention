@@ -455,7 +455,14 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
     from numpy.testing import assert_almost_equal
     assert_almost_equal(full_time, chunked_time)
     assert(not numpy.any(numpy.isnan(chunked_att)))
-    assert_almost_equal(full_att, chunked_att)
+
+    # mask away things out of seq length
+    assert full_att_layer.output.batch_dim_axis == chunked_att_layer.output.batch_dim_axis == 0
+    assert full_att_layer.output.time_dim_axis == chunked_att_layer.output.time_dim_axis == 1
+    mask = numpy.arange(numpy.shape(full_att)[1]).reshape([1,-1,1]) < full_time.reshape([-1,1,1])
+    full_att = full_att * mask
+    chunked_att = chunked_att * mask
+    assert_almost_equal(full_att, chunked_att, decimal=3)
     print("Attention context vectors are equal!")
 
 
