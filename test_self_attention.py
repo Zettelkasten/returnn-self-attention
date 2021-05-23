@@ -350,6 +350,7 @@ def test_full_lsh_cross_attention_construct():
     'output': {
       'class': 'rec',
       'target': 'classes',
+      'from': [],
       'max_seq_len': 'max_len_from("base:encoder") * 3',
       'unit': {
         'embed': {'class': 'linear', 'activation': None, 'from': ['prev:output'], "n_out": 7},
@@ -388,6 +389,7 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
       'class': 'rec',
       'target': 'classes',
       'max_seq_len': dec_time,
+      'from': [],
       'unit': {
         'embed': {'class': 'linear', 'activation': None, 'from': ['prev:output'], "n_out": 7},
         'chunked_att_att': None,
