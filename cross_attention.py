@@ -110,7 +110,7 @@ def add_full_lsh_cross_attention_layer(
   d, db, input, keys_input, output, query_time_axis=None, key_time_axis=None,
   num_heads=8, key_dim=64, value_dim=64, dropout=0.0,
   ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
-  num_hashes=14, num_rounds=1, mask_current_value=float(-10**5), mask_different_hashes=True):
+  num_hashes=14, num_rounds=1, mask_current_value=float(-10**5), mask_different_hashes=True, debug_print=False):
   """
   Add a cross-attention layer with masking as in the LSH case.
   This way, you can e.g. train a system using LSH attention, but then do search using this.
@@ -131,6 +131,7 @@ def add_full_lsh_cross_attention_layer(
   :param int num_rounds:
   :param float mask_current_value:
   :param bool mask_different_hashes:
+  :param bool debug_print:
   """
   query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
 
@@ -165,6 +166,20 @@ def add_full_lsh_cross_attention_layer(
   d[output + '_energy'] = {
     'class': 'switch', 'condition': output + '_energy_mask',
     'true_from': output + '_energy_unmasked', 'false_from': mask_current_value}  # [B,n,query-T?,key-T]
+
+  if debug_print:
+    for name in [output + n for n in [
+      '_query', '_query_hash', '_energy_mask', '_energy_unmasked', '_energy', '_weights']] + [
+      'base:' + output + '_key', 'base:' + output + '_key_hash']:
+      if name.startswith('base:'):
+        name = name[len('base:'):]
+        assert name in db and name + '_orig' not in db
+        db[name + '_orig'] = db[name]
+        db[name] = {'class': 'print', 'from': [name + '_orig']}
+      else:
+        assert name in d and name + '_orig' not in d
+        d[name + '_orig'] = d[name]
+        d[name] = {'class': 'print', 'from': [name + '_orig']}
 
 
 def add_lsh_cross_attention_layer(
