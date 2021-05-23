@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - 3.7
+        tf-version:
+          - 2.3.0
+        action:
+          - TEST=self_attention
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - uses: actions/setup-python@v2
+      with:
+        python-version: 2.7
+      if: matrix.python-version != 2.7
+
+    - uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache dependencies
+      uses: actions/cache@v2
+      with:
+        path: |
+          ~/.cache
+          ~/.local
+        key: cache-${{ runner.os }}-py${{ matrix.python-version }}-tf${{ matrix.tf-version }}
+        restore-keys: |
+          cache-${{ runner.os }}-py${{ matrix.python-version }}-
+    - name: Setup dependencies
+      run: |
+        echo "PATH=$PATH:~/.local/bin" >> $GITHUB_ENV
+        echo "Python ${{matrix.python-version}}"
+        echo "pip: $(type pip)"
+        echo "pip2: $(type pip2)"
+        git clone https://github.com/rwth-i6/returnn.git -b frithjof-self-attention
+        cd returnn
+        pip2 install -qq --upgrade pip setuptools wheel six | cat  # Python2<->Python3
+        pip2 install --user -r requirements.txt | cat  # need for Python2<->Python3 communication tests
+        pip2 install --user typing | cat
+        pip install --user --upgrade pip setuptools wheel
+        pip install --user typing | cat  # needed for Python 2 in some cases
+        if [ "${{matrix.python-version}}" == "2.7" ]; then
+          echo "Cleaning ub potential messed up tensorboard for Python 2.7."
+          echo "Current site-packages:"
+          ls ~/.local/lib/python2.7/site-packages
+          # https://github.com/tensorflow/tensorboard/issues/1862#issuecomment-521876133
+          rm -rf ~/.local/lib/python2.7/site-packages/tensorboard* || true
+        fi
+        pip install --user -r requirements.txt | cat
+        pip install --user --upgrade tensorflow==${{ matrix.tf-version }} | cat
+        pip install --user theano==0.9 | cat
+        pip install --user nose
+        cd ..
+        # Enforce the right Python interpreter for nosetests.
+        echo "#!/usr/bin/env python" > ~/nosetests
+        cat ~/.local/bin/nosetests >> ~/nosetests
+        chmod +x ~/nosetests
+        mv ~/nosetests ~/.local/bin/nosetests
+    - name: Test Python/Numpy/TF versions.
+      run: |
+        echo "Python env: $(type python) $(python --version)"
+        python -c "import numpy; print('NumPy:', numpy.version.full_version)"
+        python -c "import tensorflow as tf; print('TensorFlow:', tf.__git_version__, tf.__version__, tf.__file__)"
+        python -c "import tensorflow as tf; assert tf.__version__ == '${{ matrix.tf-version }}'"
+        echo "Nosetests env: $(type nosetests)"
+        nosetests -V
+    - name: Run test
+      run: |
+        # Set correct python path to find RETURNN
+        export PYTHONPATH=$PWD/returnn/:$PWD/returnn/tests/:$PYTHONPATH
+        export ${{ matrix.action }}
+        if [[ ! -z "$TEST" ]]; then nosetests test_$TEST.py; fi
+        if [[ ! -z "$RUN" ]]; then $RUN; fi
