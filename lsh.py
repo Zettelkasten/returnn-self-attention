@@ -265,7 +265,7 @@ def add_lsh_attention_layer(
   # and thus need to have at least one masked key for every query.
   # Otherwise, the gradients will be NaN.
   # We ensure this by masking all energies with a small (finite) number.
-  d[output + '_sorted_chunked_final_small_mask'] = {
+  d[output + '_sorted_chunked_final_mask'] = {
     'class': 'reduce', 'from': [output + '_sorted_chunked_mask'],
     'mode': 'all', 'axis': 'stag:stacked-key-window'}  # [B,n,r,query-chunk,query-window]
 
@@ -284,8 +284,8 @@ def add_lsh_attention_layer(
     'true_from': small_mask_value,
     'false_from': output + '_sorted_chunked_energy_unmasked2'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
   d[output + '_sorted_chunked_energy'] = {
-    'class': 'switch', 'condition': output + '_sorted_chunked_final_small_mask',
-    'true_from': small_mask_value,
+    'class': 'switch', 'condition': output + '_sorted_chunked_final_mask',
+    'true_from': 0.0,  # value does not matter, but must be finite
     'false_from': output + '_sorted_chunked_energy_unmasked3'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
 
   # Compute attention output of each round
