@@ -187,7 +187,7 @@ def add_lsh_cross_attention_layer(
   num_heads=8, num_rounds=1, key_dim=64, value_dim=64, dropout=0.0, num_hashes, key_chunk_size, query_chunk_size,
   key_chunks_before=None, key_chunks_after=None,
   ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
-  small_mask_value=float(-10**5), mask_different_hashes=True, fallback_mode, allow_duplicate_attention=False,
+  small_mask_value=float(-10**5), mask_different_hashes=True, allow_duplicate_attention=False,
   debug_print=False):
   query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
   assert keys_input.startswith('base:')
@@ -210,7 +210,7 @@ def add_lsh_cross_attention_layer(
     key_time_axis=key_time_axis, num_heads=num_heads, num_rounds=num_rounds, key_dim=key_dim, value_dim=value_dim,
     dropout=dropout, num_hashes=num_hashes, query_chunk_size=query_chunk_size, key_chunk_size=key_chunk_size,
     key_chunks_before=key_chunks_before, key_chunks_after=key_chunks_after, ff_init=ff_init,
-    small_mask_value=small_mask_value, mask_different_hashes=mask_different_hashes, fallback_mode=fallback_mode,
+    small_mask_value=small_mask_value, mask_different_hashes=mask_different_hashes,
     allow_duplicate_attention=allow_duplicate_attention, debug_print=debug_print)
 
   # Select the context vector for the query we actually want

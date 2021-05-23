@@ -417,7 +417,7 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
     d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder',
     output='chunked_att', num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
     key_chunk_size=chunk_size, query_chunk_size=chunk_size, key_chunks_before=chunks_before,
-    key_chunks_after=chunks_after, fallback_mode='average_window', debug_print=False)
+    key_chunks_after=chunks_after, debug_print=False)
   net_dict['output']['unit']['chunked_att_att']['is_output_layer'] = True
   net_dict['output']['unit']['full_att_att']['is_output_layer'] = True
   net_dict['output']['unit']['chunked_att_query0']['reuse_params'] = 'full_att_query0'
@@ -476,6 +476,95 @@ def test_lsh_cross_attention_equals_full_lsh_cross_attention():
     enc_time=5, dec_time=1, chunk_size=6, chunks_before=0, chunks_after=0, num_heads=1, num_hashes=4)
   _test_lsh_cross_attention_equals_full_lsh_cross_attention(
     enc_time=15, dec_time=10, chunk_size=5, chunks_before=1, chunks_after=1)
+
+
+def _test_lsh_cross_attention_no_mask_different_hashes(
+    n_time, mask_current, chunk_size, chunks_before, chunks_after, duplicates, n_batch=3,
+    num_heads=2, key_dim=3, value_dim=3, num_hashes=26):
+  print(
+    'Testing n_time =', n_time, 'mask_current =', mask_current, 'chunk_size =', chunk_size,
+    'chunks_before =', chunks_before, 'chunks_after =', chunks_after, 'allow_duplicate_attention =', duplicates)
+  with make_scope() as session:
+    assert n_time <= chunk_size * (chunks_before + 1 + chunks_after), (
+      'if chunk size is too small, vanilla attention != lsh attention')
+    net_dict = {
+      'encoder': {'class': 'linear', 'n_out': 5, 'activation': None},
+      'output': {
+        'class': 'rec',
+        'target': 'classes',
+        'max_seq_len': 'max_len_from("base:encoder") * 3',
+        'from': [],
+        'unit': {
+          'embed': {'class': 'linear', 'activation': None, 'from': ['prev:output'], "n_out": 7},
+          'lsh_att': None,
+          'vanilla_att': None,
+          'output_prob': {'class': 'softmax', 'from': ['lsh_att', 'vanilla_att'], 'target': 'classes'},
+          'output': {
+            'class': 'choice', 'beam_size': 4, 'target': 'classes', 'from': ['output_prob'], 'initial_output': 'zeros',
+            'loss': 'ce', 'is_output_layer': True},
+          "end": {'class': 'compare', 'from': ['output'], 'value': -1},  # should always be False.
+        }
+      },
+      'vanilla_out': {'class': 'copy', 'from': 'output/vanilla_att', 'is_output_layer': True},
+      'lsh_out': {'class': 'copy', 'from': 'output/lsh_att', 'is_output_layer': True},
+      'decision': {'class': 'decide', 'from': ['output'], 'loss': 'edit_distance', 'loss_opts': {}, 'target': 'classes'}
+    }  # type: dict[str, Any]
+    add_lsh_cross_attention_layer(
+      net_dict['output']['unit'], net_dict, input='embed', keys_input='base:encoder', output='lsh',
+      num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
+      key_chunk_size=chunk_size, query_chunk_size=chunk_size, key_chunks_before=chunks_before,
+      key_chunks_after=chunks_after, mask_different_hashes=False,
+      allow_duplicate_attention=duplicates, debug_print=False)
+    add_vanilla_cross_attention_layer(
+      net_dict['output']['unit'], net_dict, input='embed', keys_input='base:encoder', output='vanilla',
+      num_heads=num_heads, key_dim=key_dim, value_dim=value_dim)
+    net_dict['output']['unit']['lsh_att']['is_output_layer'] = True
+    net_dict['output']['unit']['vanilla_att']['is_output_layer'] = True
+    net_dict['output']['unit']['lsh_query0']['reuse_params'] = 'vanilla_query0'
+    net_dict['lsh_key0']['reuse_params'] = 'vanilla_key0'
+    net_dict['lsh_value0']['reuse_params'] = 'vanilla_value0'
+
+    config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
+    config.update(dict(num_inputs=num_heads*key_dim, num_outputs=num_heads*value_dim))
+    network = TFNetwork(config=config, train_flag=True)
+    network.construct_from_dict(net_dict)
+
+    assert_equal(network.get_layer("vanilla_out").output.shape, (None, num_heads * value_dim))
+    assert_equal(network.get_layer("lsh_out").output.shape, (None, num_heads * value_dim))
+    feed_dict = make_feed_dict(network.extern_data.data.values(), same_time=True, n_batch=n_batch, n_time=n_time)
+    session.run(tf_compat.v1.global_variables_initializer())
+
+    input_out = network.get_layer("data").output
+    vanilla_out = network.get_layer("vanilla_out").output
+    lsh_out = network.get_layer("lsh_out").output
+    vanilla, lsh, sizes, vanilla_sizes, lsh_sizes = session.run(
+      [vanilla_out.placeholder, lsh_out.placeholder,
+        input_out.size_placeholder[input_out.time_dim_axis_excluding_batch],
+        vanilla_out.size_placeholder[vanilla_out.time_dim_axis_excluding_batch],
+        lsh_out.size_placeholder[lsh_out.time_dim_axis_excluding_batch]],
+      feed_dict=feed_dict)
+    numpy.testing.assert_equal(vanilla_sizes, sizes)
+    numpy.testing.assert_equal(lsh_sizes, sizes)
+    # take into account different seq lengths
+    assert vanilla_out.batch_dim_axis == lsh_out.batch_dim_axis == 0
+    assert vanilla_out.time_dim_axis == lsh_out.time_dim_axis == 1
+    mask = (numpy.arange(numpy.shape(vanilla)[1]).reshape([1,-1,1]) < sizes.reshape([-1,1,1]))
+    vanilla = vanilla * mask
+    lsh = lsh * mask
+    print('seq lengths:', sizes)
+    print('vanilla out:  - ', vanilla_out)
+    pprint(vanilla)
+    print('lsh out:  -', lsh_out)
+    pprint(lsh)
+    numpy.testing.assert_almost_equal(vanilla, lsh, decimal=5)
+    print('They are equal!')
+
+
+def test_lsh_cross_attention_no_mask_different_hashes():
+  _test_lsh_cross_attention_no_mask_different_hashes(
+    n_time=13, mask_current=False, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True)
+  _test_lsh_cross_attention_no_mask_different_hashes(
+    n_time=13, mask_current=True, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True)
 
 
 if __name__ == "__main__":
