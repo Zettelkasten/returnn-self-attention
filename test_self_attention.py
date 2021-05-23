@@ -1,14 +1,20 @@
+import sys
+
 from typing import Any
+
+sys.path.insert(1, '/u/petrick/software/returnn/official/')
+sys.path.insert(1, '/u/petrick/software/returnn/official/tests')
+sys.path.insert(1, '/u/petrick/lsh/playground/encoder_lsh')
 
 from returnn.util import better_exchook
 import unittest
 from pprint import pprint
 from nose.tools import assert_equal
+from tests.test_TFNetworkLayer import make_scope, make_feed_dict
+from tests.test_TFNetworkRecLayer import check_reclayer_optimize_out
 from returnn.config import Config
 from returnn.tf.network import *
 from returnn.tf.layers.basic import *
-from tests.test_TFNetworkLayer import make_scope, make_feed_dict
-from tests.test_TFNetworkRecLayer import check_reclayer_optimize_out
 
 from self_attention import *
 from lsh import add_lsh_self_attention_layer
