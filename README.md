@@ -1,5 +1,7 @@
 # Self-Attention implementation for [RETURNN](https://github.com/rwth-i6/returnn)
 
+![CI Badge](https://github.com/Zettelkasten/returnn-self-attention/actions/workflows/main.yml/badge.svg)
+
 This repository implements self attention mechanisms:
  - "Vanilla" multi-head dot-attention of the [Transformer](https://papers.nips.cc/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf).
  - Locality sensitive hashing as presented in the [Reformer](https://arxiv.org/pdf/2001.04451.pdf).
