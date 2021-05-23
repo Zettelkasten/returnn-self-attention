@@ -242,14 +242,6 @@ def add_lsh_attention_layer(
     'description': 'stacked-key-window'}  # [B,n,r,query-chunk,stacked-key-window]
   large_masking_layers_from.append(output + '_sorted_chunked_mask_key_chunk_duplicates')
   assert num_rounds == 1 or allow_duplicate_attention, 'allow_duplicate_attention=False for multi round not implemented'
-  # We never want the attention weights to be NaN for any query (even for unmasked queries),
-  # and thus need to have at least one masked key for every query.
-  # Otherwise, the gradients will be NaN.
-  # We ensure this by masking all energies with a small (finite) number.
-  d[output + '_sorted_chunked_small_mask_invalid_query_position'] = {
-    'class': 'compare', 'from': [output + '_sorted_chunked_queries_hashed'],
-    'value': hash_mask_value, 'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-  small_masking_layers_from.append(output + '_sorted_chunked_small_mask_invalid_query_position')
   if mask_current or fallback_mode == 'current':
     # if mask_current, but fallback_mode == 'average_window', we also have to change the current pos masking.
     is_small = fallback_mode in {'current', 'average_window'}
@@ -283,6 +275,13 @@ def add_lsh_attention_layer(
   else:
     d[output + '_sorted_chunked_small_mask'] = {
       'class': 'copy', 'from': small_masking_layers_from}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  # We never want the attention weights to be NaN for any query (even for unmasked queries),
+  # and thus need to have at least one masked key for every query.
+  # Otherwise, the gradients will be NaN.
+  # We ensure this by masking all energies with a small (finite) number.
+  d[output + '_sorted_chunked_final_small_mask'] = {
+    'class': 'reduce', 'from': [output + '_sorted_chunked_mask'],
+    'mode': 'all', 'axis': 'stag:stacked-key-window'}  # [B,n,r,query-chunk,query-window]
 
   # Compute chunked energy by comparing chunked queries and keys for each query chunk
   d[output + '_sorted_chunked_energy_unmasked1'] = {
@@ -294,10 +293,14 @@ def add_lsh_attention_layer(
     'class': 'switch', 'condition': output + '_sorted_chunked_small_mask',
     'true_from': small_mask_value,
     'false_from': output + '_sorted_chunked_energy_unmasked1'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-  d[output + '_sorted_chunked_energy'] = {
+  d[output + '_sorted_chunked_energy_unmasked3'] = {
     'class': 'switch', 'condition': output + '_sorted_chunked_mask',
     'true_from': float('-inf'),
     'false_from': output + '_sorted_chunked_energy_unmasked2'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  d[output + '_sorted_chunked_energy'] = {
+    'class': 'switch', 'condition': output + '_sorted_chunked_final_small_mask',
+    'true_from': small_mask_value,
+    'false_from': output + '_sorted_chunked_energy_unmasked3'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
 
   # Compute attention output of each round
   d[output + '_sorted_chunked_energy_logsumexp'] = {
