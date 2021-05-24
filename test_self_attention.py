@@ -21,14 +21,14 @@ from lsh import add_lsh_self_attention_layer
 from cross_attention import *
 
 
-def _test_lsh_attention_optimize_out(chunk_size, chunks_before, chunks_after, num_hashes=26):
+def _test_lsh_attention_optimize_out(chunk_size, chunks_before, chunks_after, num_hashes=26, chunk_align='identity'):
   num_heads, key_dim, value_dim = 2, 3, 3
   # check_reclayer_optimize_out uses n_time = 7.
   network = {}
   add_lsh_self_attention_layer(
     network, 'data:source', 'att', chunks_before=chunks_before, chunks_after=chunks_after, chunk_size=chunk_size,
     num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, inside_rec_layer=True,
-    past_only=True, allow_duplicate_attention=False, time_axis='stag:extern_data:data')
+    past_only=True, allow_duplicate_attention=False, time_axis='stag:extern_data:data', chunk_alignment=chunk_align)
 
   check_reclayer_optimize_out(
     {'class': 'copy', 'from': 'att_att', 'n_out': value_dim * num_heads},
@@ -41,11 +41,12 @@ def test_lsh_attention_optimize_out():
   _test_lsh_attention_optimize_out(chunk_size=7, chunks_before=0, chunks_after=0, num_hashes=2)
   _test_lsh_attention_optimize_out(chunk_size=4, chunks_before=1, chunks_after=0)
   _test_lsh_attention_optimize_out(chunk_size=4, chunks_before=1, chunks_after=0, num_hashes=2)
+  _test_lsh_attention_optimize_out(chunk_size=4, chunks_before=1, chunks_after=1, chunk_align='search_bounds_centered')
 
 
 def _test_lsh_self_attention_no_mask_different_hashes(
     n_time, past_only, mask_current, chunk_size, chunks_before, chunks_after, duplicates, n_batch=3,
-    num_heads=2, key_dim=3, value_dim=3, num_hashes=26):
+    num_heads=2, key_dim=3, value_dim=3, num_hashes=26, chunk_align='identity'):
   print(
     'Testing n_time =', n_time, 'past_only =', past_only, 'mask_current =', mask_current, 'chunk_size =', chunk_size,
     'chunks_before =', chunks_before, 'chunks_after =', chunks_after, 'allow_duplicate_attention =', duplicates)
@@ -64,7 +65,8 @@ def _test_lsh_self_attention_no_mask_different_hashes(
       net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only,
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
       chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
-      mask_current=mask_current, mask_different_hashes=False, allow_duplicate_attention=duplicates, debug_print=False)
+      mask_current=mask_current, mask_different_hashes=False, allow_duplicate_attention=duplicates,
+      chunk_alignment=chunk_align, debug_print=False)
     add_vanilla_self_attention_layer(
       net_dict, 'data', 'vanilla', inside_rec_layer=False, past_only=past_only,
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, share_key_query=True,
@@ -117,13 +119,21 @@ def test_lsh_self_attention_no_mask_different_hashes():
     n_time=13, past_only=True, mask_current=False, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=True)
   _test_lsh_self_attention_no_mask_different_hashes(
     n_time=13, past_only=True, mask_current=True, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=True)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=False, mask_current=False, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True,
+    chunk_align='search_bounds_centered')
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=False, mask_current=True, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True,
+    chunk_align='search_bounds_centered')
 
 
 def test_lsh_self_attention_no_mask_different_hashes_no_duplicates():
   _test_lsh_self_attention_no_mask_different_hashes(
-    n_time=6, past_only=False, mask_current=False, chunk_size=4, chunks_before=1, chunks_after=0, duplicates=False, num_heads=1)
+    n_time=6, past_only=False, mask_current=False, chunk_size=4, chunks_before=1, chunks_after=0, duplicates=False,
+    num_heads=1)
   _test_lsh_self_attention_no_mask_different_hashes(
-    n_time=2, past_only=False, mask_current=False, chunk_size=1, chunks_before=2, chunks_after=0, duplicates=False, n_batch=1, num_heads=1)
+    n_time=2, past_only=False, mask_current=False, chunk_size=1, chunks_before=2, chunks_after=0, duplicates=False,
+    n_batch=1, num_heads=1)
   _test_lsh_self_attention_no_mask_different_hashes(
     n_time=2, past_only=False, mask_current=False, chunk_size=1, chunks_before=2, chunks_after=0, duplicates=False)
   _test_lsh_self_attention_no_mask_different_hashes(
@@ -141,10 +151,16 @@ def test_lsh_self_attention_no_mask_different_hashes_no_duplicates():
     n_time=13, past_only=True, mask_current=False, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=False)
   _test_lsh_self_attention_no_mask_different_hashes(
     n_time=13, past_only=True, mask_current=True, chunk_size=7, chunks_before=1, chunks_after=0, duplicates=False)
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=False, mask_current=False, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=False,
+    chunk_align='search_bounds_centered')
+  _test_lsh_self_attention_no_mask_different_hashes(
+    n_time=13, past_only=False, mask_current=True, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=False,
+    chunk_align='search_bounds_centered')
 
 
 def _test_lsh_self_attention_hashing(
-    hash_sequence, chunk_size, chunks_before, chunks_after, past_only=False):
+    hash_sequence, chunk_size, chunks_before, chunks_after, past_only=False, chunk_align='identity'):
   """
   :param np.ndarray hash_sequence: shape [batch, heads, rounds, time], dtype int32, with hash classes
   :return:
@@ -155,7 +171,8 @@ def _test_lsh_self_attention_hashing(
   import numpy as np
   with make_scope() as session:
     print(
-      '------ Testing with chunk_size =', chunk_size, 'chunks_before =', chunks_before, 'chunks_after =', chunks_after)
+      '------ Testing with chunk_size =', chunk_size, 'chunks_before =', chunks_before, 'chunks_after =', chunks_after,
+      'chunk_align =', chunk_align)
     hash_sequence = np.asarray(hash_sequence, dtype='int32')
     if len(hash_sequence.shape) == 3:
       # hash_sequence is [batch, heads, time]
@@ -174,7 +191,8 @@ def _test_lsh_self_attention_hashing(
       net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only, num_heads=num_heads, num_rounds=num_rounds,
       key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, chunk_size=chunk_size, chunks_before=chunks_before,
       chunks_after=chunks_after,
-      mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False, debug_print=False)
+      mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False, chunk_alignment=chunk_align,
+      debug_print=False)
     # Now we override the keys/queries, lsh_value and lsh_kq_hash with our own inputs
     def get_kqv_sequence(self, source):
       assert source(0, as_data=True).shape == (None, num_heads, key_dim)
@@ -188,6 +206,8 @@ def _test_lsh_self_attention_hashing(
     net_dict["lsh_value"] = {"class": "eval", "from": "lsh_kq_original", "eval": get_kqv_sequence}
     net_dict["lsh_queries_hashed"] = {"class": "eval", "from": "lsh_query_hash_original", "eval": get_hash_sequence}
     net_dict["lsh_keys_hashed"] = {"class": "copy", "from": "lsh_queries_hashed"}
+    net_dict["lsh_queries_hashed_neg_mask"] = {"class": "copy", "from": "lsh_queries_hashed"}
+    net_dict["lsh_keys_hashed_neg_mask"] = {"class": "copy", "from": "lsh_queries_hashed"}
 
     config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
     config.update(dict(num_inputs=num_heads * key_dim, num_outputs=num_heads * value_dim))
@@ -233,7 +253,13 @@ def _test_lsh_self_attention_hashing(
 def _test_lsh_self_attention_hashing_all(hash_sequence, chunk_size, chunks_before, chunks_after):
   for past_only in [False, True]:
     _test_lsh_self_attention_hashing(
-      hash_sequence, chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after, past_only=past_only)
+      hash_sequence, chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
+      past_only=past_only, chunk_align='identity')
+    # with chunk_align='search_bounds_centered' these tests should always still work
+    if chunks_before == chunks_after:
+      _test_lsh_self_attention_hashing(
+        hash_sequence, chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
+        past_only=past_only, chunk_align='search_bounds_centered')
 
 
 def test_lsh_self_attention_hashing():
@@ -260,6 +286,8 @@ def test_lsh_self_attention_hashing():
   random_hashes = np.random.randint(low=0, high=26, size=(3,4,1,34), dtype='int32')
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False)
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=0, past_only=True)
+  _test_lsh_self_attention_hashing(
+    random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False, chunk_align='search_bounds_centered')
 
 
 @unittest.skip('multi round hashing not implemented currently')
@@ -385,7 +413,7 @@ def test_full_lsh_cross_attention_construct():
 
 
 def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
-    enc_time, dec_time, chunk_size, chunks_before, chunks_after, num_heads=2, num_hashes=6):
+    enc_time, dec_time, chunk_size, chunks_before, chunks_after, num_heads=2, num_hashes=6, chunk_align='identity'):
   key_dim, value_dim = 3, 3
   net_dict = {
     'encoder': {'class': 'linear', 'n_out': 5, 'activation': None},
@@ -417,7 +445,7 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
     d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder',
     output='chunked_att', num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
     key_chunk_size=chunk_size, query_chunk_size=chunk_size, key_chunks_before=chunks_before,
-    key_chunks_after=chunks_after, debug_print=False)
+    key_chunks_after=chunks_after, debug_print=False, chunk_alignment=chunk_align)
   net_dict['output']['unit']['chunked_att_att']['is_output_layer'] = True
   net_dict['output']['unit']['full_att_att']['is_output_layer'] = True
   net_dict['output']['unit']['chunked_att_query0']['reuse_params'] = 'full_att_query0'
@@ -476,14 +504,20 @@ def test_lsh_cross_attention_equals_full_lsh_cross_attention():
     enc_time=5, dec_time=1, chunk_size=6, chunks_before=0, chunks_after=0, num_heads=1, num_hashes=4)
   _test_lsh_cross_attention_equals_full_lsh_cross_attention(
     enc_time=15, dec_time=10, chunk_size=5, chunks_before=1, chunks_after=1)
+  _test_lsh_cross_attention_equals_full_lsh_cross_attention(
+    enc_time=5, dec_time=1, chunk_size=6, chunks_before=0, chunks_after=0, num_heads=1, num_hashes=4,
+    chunk_align='search_bounds_centered')
+  _test_lsh_cross_attention_equals_full_lsh_cross_attention(
+    enc_time=15, dec_time=10, chunk_size=5, chunks_before=1, chunks_after=1, chunk_align='search_bounds_centered')
 
 
 def _test_lsh_cross_attention_no_mask_different_hashes(
     n_time, mask_current, chunk_size, chunks_before, chunks_after, duplicates, n_batch=3,
-    num_heads=2, key_dim=3, value_dim=3, num_hashes=26):
+    num_heads=2, key_dim=3, value_dim=3, num_hashes=26, chunk_align='identity'):
   print(
     'Testing n_time =', n_time, 'mask_current =', mask_current, 'chunk_size =', chunk_size,
-    'chunks_before =', chunks_before, 'chunks_after =', chunks_after, 'allow_duplicate_attention =', duplicates)
+    'chunks_before =', chunks_before, 'chunks_after =', chunks_after, 'allow_duplicate_attention =', duplicates,
+    'chunk_align =', chunk_align)
   with make_scope() as session:
     assert n_time <= chunk_size * (chunks_before + 1 + chunks_after), (
       'if chunk size is too small, vanilla attention != lsh attention')
@@ -514,7 +548,7 @@ def _test_lsh_cross_attention_no_mask_different_hashes(
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
       key_chunk_size=chunk_size, query_chunk_size=chunk_size, key_chunks_before=chunks_before,
       key_chunks_after=chunks_after, mask_different_hashes=False,
-      allow_duplicate_attention=duplicates, debug_print=False)
+      allow_duplicate_attention=duplicates, chunk_alignment=chunk_align, debug_print=False)
     add_vanilla_cross_attention_layer(
       net_dict['output']['unit'], net_dict, input='embed', keys_input='base:encoder', output='vanilla',
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim)

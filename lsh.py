@@ -8,7 +8,7 @@ def add_lsh_attention_layer(
   ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   small_mask_value=float(-10**5),
   past_only=None, mask_current=None, mask_different_hashes=True, fallback_mode=None, allow_duplicate_attention=False,
-  debug_print=False):
+  chunk_alignment, debug_print=False):
   """
   Computes LSH attention for an entire sequence.
 
@@ -35,6 +35,7 @@ def add_lsh_attention_layer(
   :param None|bool mask_current: for self attention
   :param bool mask_different_hashes:
   :param bool allow_duplicate_attention:
+  :param str chunk_alignment:
   :param bool debug_print:
   """
   assert query_time_axis.startswith('stag:') and key_time_axis.startswith('stag:')
@@ -47,6 +48,7 @@ def add_lsh_attention_layer(
   assert key_chunks_before >= 0 and key_chunks_after >= 0
   hash_mask_value = 2 ** 31 - 1
   assert hash_mask_value > num_hashes
+  assert chunk_alignment in {'identity', 'search_bounds_centered'}
 
   def chunk_query_sequence(name, pad_value):
     """
@@ -92,12 +94,13 @@ def add_lsh_attention_layer(
   make_lsh_hash_gen(
     d, output + '_hash_gen', key_dim=key_dim, num_hashes=num_hashes, num_heads=num_heads, num_rounds=num_rounds,
     ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
-  apply_lsh_hash_gen(
-    d, input=queries_input, hash_gen_input=output + '_hash_gen', output=output + '_queries_hashed',
-    time_axis=query_time_axis, hash_mask_value=hash_mask_value)  # [B,query-time,n,r] :: d_h
-  apply_lsh_hash_gen(
-    d, input=keys_input, hash_gen_input=output + '_hash_gen', output=output + '_keys_hashed',
-    time_axis=key_time_axis, hash_mask_value=hash_mask_value)  # [B,key-time,n,r] :: d_h
+  for neg, mask_value in [('', hash_mask_value), ('_neg_mask', -hash_mask_value)]:
+    apply_lsh_hash_gen(
+      d, input=queries_input, hash_gen_input=output + '_hash_gen', output=output + '_queries_hashed%s' % neg,
+      time_axis=query_time_axis, hash_mask_value=mask_value)  # [B,query-time,n,r] :: d_h
+    apply_lsh_hash_gen(
+      d, input=keys_input, hash_gen_input=output + '_hash_gen', output=output + '_keys_hashed%s' % neg,
+      time_axis=key_time_axis, hash_mask_value=mask_value)  # [B,key-time,n,r] :: d_h
 
   # Compute a permutation by looking at the unsorted hashes
   d[output + '_sorted_queries_orig_indices'] = {
@@ -126,9 +129,17 @@ def add_lsh_attention_layer(
   d[output + '_sorted_keys_hashed'] = {
     'class': 'gather', 'from': [output + '_keys_hashed'], 'axis': key_time_axis,
     'position': output + '_sorted_keys_orig_indices'}  # [B,sorted-key-time,n,r] :: d_h
+  d[output + '_sorted_queries_hashed_neg_mask'] = {
+    'class': 'gather', 'from': [output + '_queries_hashed_neg_mask'], 'axis': query_time_axis,
+    'position': output + '_sorted_queries_orig_indices'}  # [B,sorted-query-time,n,r] :: d_h
+  d[output + '_sorted_keys_hashed_neg_mask'] = {
+    'class': 'gather', 'from': [output + '_keys_hashed_neg_mask'], 'axis': key_time_axis,
+    'position': output + '_sorted_keys_orig_indices'}  # [B,sorted-key-time,n,r] :: d_h
   chunk_query_sequence('queries_hashed', pad_value=hash_mask_value)  # [B,n,r,query-chunk,query-window] :: d_h
   chunk_key_sequence('keys_hashed', pad_value=hash_mask_value)  # [B,n,r,key-chunk,key-window] :: d_h
   stack_chunked_key_sequence('keys_hashed')  # [B,n,r,query-chunk,stacked-key-window] :: d_h
+  chunk_query_sequence('queries_hashed_neg_mask', pad_value=-hash_mask_value)  # [B,n,r,query-chunk,query-window] :: d_h
+  chunk_key_sequence('keys_hashed_neg_mask', pad_value=-hash_mask_value)  # [B,n,r,key-chunk,key-window] :: d_h
 
   # Sort the queries, keys, values by applying the permutation
   d[output + '_sorted_queries_unscaled'] = {
@@ -150,9 +161,38 @@ def add_lsh_attention_layer(
   chunk_key_sequence('values', pad_value=0.0)  # [B,n,r,key-chunk,key-window,F|d_v]
 
   # Compute chunk alignment from query chunks to a fixed-sized set of key chunks
-  d[output + '_query_chunk_alignment_center'] = {
-    'class': 'range_in_axis', 'axis': 'stag:query-chunk', 'keepdims': False,
-    'from': [output + '_sorted_chunked_queries']}  # [query-chunk] :: key-chunk
+  if chunk_alignment == 'identity':
+    d[output + '_query_chunk_alignment_center'] = {
+      'class': 'range_in_axis', 'axis': 'stag:query-chunk', 'keepdims': False,
+      'from': [output + '_sorted_chunked_queries']}  # [query-chunk] :: key-chunk
+  elif chunk_alignment == 'search_bounds_centered':
+    assert key_chunks_before == key_chunks_after
+    d[output + '_sorted_chunked_queries_hashed_min'] = {
+      'class': 'reduce', 'mode': 'min', 'axis': 'stag:query-window',
+      'from': [output + '_sorted_chunked_queries_hashed']}  # [B,n,r,query-chunk] :: d_h
+    d[output + '_sorted_chunked_queries_hashed_max'] = {
+      'class': 'reduce', 'mode': 'max', 'axis': 'stag:query-window',
+      'from': [output + '_sorted_chunked_queries_hashed_neg_mask']}  # [B,n,r,query-chunk] :: d_h
+    d[output + '_sorted_chunked_keys_hashed_min'] = {
+      'class': 'reduce', 'mode': 'min', 'axis': 'stag:key-window',
+      'from': [output + '_sorted_chunked_keys_hashed']}  # [B,n,r,key-chunk] :: d_h
+    d[output + '_sorted_chunked_keys_hashed_max'] = {
+      'class': 'reduce', 'mode': 'max', 'axis': 'stag:key-window',
+      'from': [output + '_sorted_chunked_keys_hashed_neg_mask']}  # [B,n,r,key-chunk] :: d_h
+    d[output + '_query_chunk_alignment_lower_key_chunk'] = {
+      'class': 'search_sorted', 'axis': 'stag:key-chunk', 'side': 'left',
+      'sorted_sequence': output + '_sorted_chunked_keys_hashed_min',
+      'values': output + '_sorted_chunked_queries_hashed_min'}  # [B,n,r,query-chunk] :: key-chunk
+    # the upper_key_chunk will be one value to high. correct this later when computing the center.
+    d[output + '_query_chunk_alignment_upper_key_chunk'] = {
+      'class': 'search_sorted', 'axis': 'stag:key-chunk', 'side': 'right',
+      'sorted_sequence': output + '_sorted_chunked_keys_hashed_max',
+      'values': output + '_sorted_chunked_queries_hashed_max'}  # [B,n,r,query-chunk] :: key-chunk
+    d[output + '_query_chunk_alignment_center'] = {
+      'class': 'eval',
+      'from': [output + '_query_chunk_alignment_lower_key_chunk', output + '_query_chunk_alignment_upper_key_chunk'],
+      'eval': 'tf.cast(tf.round((source(0) + source(1) - 1) / 2), dtype="int32")',
+      'out_type': {'dtype': 'int32'}}  # [B,n,r,query-chunk] :: key-chunk in float
   d[output + '_query_chunk_alignment_offset_unnamed'] = {
     'class': 'range', 'start': -key_chunks_before, 'delta': 1, 'limit': key_chunks_after + 1}  # [key-chunk-offset]
   d[output + '_query_chunk_alignment_offset'] = {
@@ -367,7 +407,7 @@ def add_lsh_self_attention_layer(
   num_heads=8, num_rounds=1, key_dim=64, value_dim=64, dropout=0.0, num_hashes, chunk_size, chunks_before=None,
   chunks_after=None, ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   mask_current=True, small_mask_value=float(-10**5), mask_different_hashes=True, allow_duplicate_attention=False,
-  debug_print=False):
+  chunk_alignment, debug_print=False):
   """
   Essentially this does (but for LSH attention)
     d[output + '_att'] = {"class": "self_attention", "num_heads": num_heads,
@@ -405,6 +445,7 @@ def add_lsh_self_attention_layer(
   :param bool allow_duplicate_attention: whether to mask attention s.t. it only attends to each key once.
     Attending to a key twice can e.g. happen for multi-round attention,
     or if the (effective) chunk size is larger than the sequence length.
+  :param str chunk_alignment:
   :param bool debug_print: will print layers contents for debugging
   """
   if past_only is None:
@@ -451,7 +492,7 @@ def add_lsh_self_attention_layer(
     key_chunks_before=chunks_before, key_chunks_after=chunks_after, ff_init=ff_init,
     small_mask_value=small_mask_value, past_only=past_only, mask_current=mask_current,
     mask_different_hashes=mask_different_hashes, allow_duplicate_attention=allow_duplicate_attention,
-    debug_print=debug_print)
+    chunk_alignment=chunk_alignment, debug_print=debug_print)
 
   if inside_rec_layer:
     d[output + '_att'] = {'class': 'gather', 'from': [output + '_att_all'], 'position': ':i', 'axis': time_axis_}
