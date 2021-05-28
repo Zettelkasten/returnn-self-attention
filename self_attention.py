@@ -730,7 +730,7 @@ def add_vanilla_self_attention_layer(
   d, input, output, inside_rec_layer=True, past_only=None, time_axis=None,
   num_heads=8, key_dim=64, value_dim=64, dropout=0.0,
   ff_init = "variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
-  share_key_query=False,
+  share_key_query=False, normalize_keys=None,
   mask_current=False, mask_current_value=float(-10**5)):
   """
   Essentially this does
@@ -747,6 +747,8 @@ def add_vanilla_self_attention_layer(
     time_axis = 'stag:extern_data:classes' if inside_rec_layer else 'stag:extern_data:data'
   assert time_axis.startswith('stag:')
   assert not inside_rec_layer or past_only
+  if normalize_keys is None:
+    normalize_keys = share_key_query
 
   # Create (non-accumulated) query, key and value
   if not share_key_query:
@@ -761,8 +763,12 @@ def add_vanilla_self_attention_layer(
       'from': [output + '_qkv']}
     d[output + '_query'] = {
       'class': 'copy', 'from': [output + '_qkv_split/0']}  # [B,T?,n,F|d_k]
-    d[output + '_key'] = {
-      'class': 'copy', 'from': [output + '_qkv_split/1']}  # [B,T?,n,F|d_k]
+    if normalize_keys:
+      d[output + '_key'] = {
+        'class': 'eval', 'eval': normalize_eval, 'from': [output + '_qkv_split/1']}  # [B,T?,n,F|d_k]
+    else:
+      d[output + '_key'] = {
+        'class': 'copy', 'from': [output + '_qkv_split/1']}  # [B,T?,n,F|d_k]
     d[output + '_value'] = {
       'class': 'copy', 'from': [output + '_qkv_split/2']}  # [B,T?,n,F|d_v]
   else:  # share_key_query
@@ -777,10 +783,11 @@ def add_vanilla_self_attention_layer(
       'from': [output + '_qv']}
     d[output + '_query'] = {
       'class': 'copy', 'from': [output + '_qv_split/0']}  # [B,T?,n,F|d_k]
-    d[output + '_key'] = {
-      'class': 'eval',
-      'eval': normalize_eval,
-      'from': [output + '_query']}  # [B,T?,n,F|d_k]
+    if normalize_keys:
+      d[output + '_key'] = {
+        'class': 'eval', 'eval': normalize_eval, 'from': [output + '_query']}  # [B,T?,n,F|d_k]
+    else:
+      d[output + '_key'] = {'class': 'copy', 'from': [output + '_query']}  # [B,T?,n,F|d_k]
     d[output + '_value'] = {
       'class': 'copy', 'from': [output + '_qv_split/1']}  # [B,T?,n,F|d_v]
 

@@ -406,7 +406,9 @@ def add_lsh_self_attention_layer(
   d, input, output, inside_rec_layer=True, past_only=None, time_axis=None, *,
   num_heads=8, num_rounds=1, key_dim=64, value_dim=64, dropout=0.0, num_hashes, chunk_size, chunks_before=None,
   chunks_after=None, ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
-  mask_current=True, small_mask_value=float(-10**5), mask_different_hashes=True, allow_duplicate_attention=False,
+  mask_current=True, small_mask_value=float(-10**5),
+  share_key_query=True, normalize_keys=None,
+  mask_different_hashes=True, allow_duplicate_attention=False,
   chunk_alignment, debug_print=False):
   """
   Essentially this does (but for LSH attention)
@@ -442,6 +444,8 @@ def add_lsh_self_attention_layer(
     All other masked values are set to -inf, thus if mask_current_value is something low but higher than -inf, will
     attend to key=query exactly iff it is the only possible key to attend to
   :param bool small_mask_value: whether a query may only attend to keys with the same hash
+  :param bool share_key_query: whether to set the key sequence equal to the query sequence
+  :param bool normalize_keys: whether to normalize the key sequence in euclidean norm
   :param bool allow_duplicate_attention: whether to mask attention s.t. it only attends to each key once.
     Attending to a key twice can e.g. happen for multi-round attention,
     or if the (effective) chunk size is larger than the sequence length.
@@ -454,26 +458,57 @@ def add_lsh_self_attention_layer(
     time_axis = 'stag:extern_data:classes' if inside_rec_layer else 'stag:extern_data:data'
   assert time_axis.startswith('stag:')
   assert not inside_rec_layer or past_only
+  if normalize_keys is None:
+    normalize_keys = share_key_query
 
   # Assume input [B,T|classes?,F|d_model]
-  d[output + '_qv0'] = {
-    'class': 'linear', 'activation': None, 'with_bias': False, 'from': [input],
-    'n_out': num_heads * (key_dim + value_dim), 'forward_weights_init': ff_init}  # [B,T|classes?,F|n*(d_k+d_v)]
-  d[output + '_qv_unnamed'] = {
-    'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, key_dim + value_dim),
-    'from': [output + '_qv0']}  # [B,T|classes?,n,F|d_k+d_v]
-  d[output + '_qv'] = {
-    'class': 'name_axis', 'axis': 'static:-2', 'description': 'att-heads',
-    'from': [output + '_qv_unnamed']}  # [B,T|classes?,n,F|d_k+d_v]
-  d[output + '_qv_split'] = {
-    'class': 'split', 'axis': 'F', 'size_splits': (key_dim, value_dim),
-    'from': [output + '_qv']}
-  d[output + '_query'] = {
-    'class': 'copy', 'from': [output + '_qv_split/0']}  # [B,T|classes?,n,F|d_k]
-  d[output + '_key'] = {
-    'class': 'eval', 'eval': normalize_eval, 'from': [output + '_query']}  # [B,T|classes?,n,F|d_k]
-  d[output + '_value'] = {
-    'class': 'copy', 'from': [output + '_qv_split/1']}  # [B,T|classes?,n,F|d_v]
+  if share_key_query:
+    d[output + '_qv0'] = {
+      'class': 'linear', 'activation': None, 'with_bias': False, 'from': [input],
+      'n_out': num_heads * (key_dim + value_dim), 'forward_weights_init': ff_init}  # [B,T|classes?,F|n*(d_k+d_v)]
+    d[output + '_qv_unnamed'] = {
+      'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, key_dim + value_dim),
+      'from': [output + '_qv0']}  # [B,T|classes?,n,F|d_k+d_v]
+    d[output + '_qv'] = {
+      'class': 'name_axis', 'axis': 'static:-2', 'description': 'att-heads',
+      'from': [output + '_qv_unnamed']}  # [B,T|classes?,n,F|d_k+d_v]
+    d[output + '_qv_split'] = {
+      'class': 'split', 'axis': 'F', 'size_splits': (key_dim, value_dim),
+      'from': [output + '_qv']}
+    d[output + '_query'] = {
+      'class': 'copy', 'from': [output + '_qv_split/0']}  # [B,T|classes?,n,F|d_k]
+    if normalize_keys:
+      d[output + '_key'] = {
+        'class': 'eval', 'eval': normalize_eval, 'from': [output + '_query']}  # [B,T|classes?,n,F|d_k]
+    else:
+      d[output + '_key'] = {
+        'class': 'copy', 'from': [output + '_query']}  # [B,T|classes?,n,F|d_k]
+    d[output + '_value'] = {
+      'class': 'copy', 'from': [output + '_qv_split/1']}  # [B,T|classes?,n,F|d_v]
+  else:  # not share_key_query
+    d[output + '_qkv0'] = {
+      'class': 'linear', 'activation': None, 'with_bias': False, 'from': [input],
+      'n_out': num_heads * (2 * key_dim + value_dim), 'forward_weights_init': ff_init}  # [B,T?,F|n*(2d_k+d_v)]
+    d[output + '_qkv_unnamed'] = {
+      'class': 'split_dims', 'axis': 'F', 'dims': (num_heads, 2 * key_dim + value_dim),
+      'from': [output + '_qkv0']}  # [B,T?,n,F|2d_k+d_v]
+    d[output + '_qkv'] = {
+      'class': 'name_axis', 'axis': 'static:-2', 'description': 'att-heads',
+      'from': [output + '_qkv_unnamed']}  # [B,T|classes?,n,F|2d_k+d_v]
+    d[output + '_qkv_split'] = {
+      'class': 'split', 'axis': 'F', 'size_splits': (key_dim, key_dim, value_dim),
+      'from': [output + '_qkv']}
+    d[output + '_query'] = {
+      'class': 'copy', 'from': [output + '_qkv_split/0']}  # [B,T?,n,F|d_k]
+    if normalize_keys:
+      d[output + '_key'] = {
+        'class': 'eval', 'eval': normalize_eval, 'from': [output + '_qkv_split/1']}  # [B,T?,n,F|d_k]
+    else:
+      d[output + '_key'] = {
+        'class': 'copy', 'from': [output + '_qkv_split/1']}  # [B,T?,n,F|d_k]
+    d[output + '_value'] = {
+      'class': 'copy', 'from': [output + '_qkv_split/2']}  # [B,T?,n,F|d_v]
+
   if inside_rec_layer:
     queries_input, keys_input, values_input = output + '_query_accum', output + '_key_accum', output + '_value_accum'
     for qkv in ('query', 'key', 'value'):
