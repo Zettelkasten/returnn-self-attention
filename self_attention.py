@@ -14,13 +14,17 @@ class NameAxisLayer(_ConcatInputLayer):
     super(NameAxisLayer, self).__init__(**kwargs)
 
     # Maybe we still need to unbroadcast a size_placeholder
-    if self.output.have_batch_axis():
-      for i, dyn_size in self.output.size_placeholder.items():
-        if len(dyn_size.shape) == 0 or dyn_size.shape[0] == 1:
-          dim_tag = DimensionTag.get_tag_from_size_tensor(dyn_size)
-          new_dyn_size = tf.broadcast_to(dyn_size, [tf.shape(self.output.placeholder)[self.output.batch_dim_axis]])
-          dim_tag.set_tag_on_size_tensor(new_dyn_size)
-          self.output.size_placeholder[i] = new_dyn_size
+    # As the output does not necessarily have a batch dim, but the size_placeholder still needs a batch dim,
+    # we use the global batch dim here.
+    from returnn.tf.layers.base import LayerBase
+    batch_dim = LayerBase.get_recent_layer().get_batch_info().dim
+    for i, dyn_size in self.output.size_placeholder.items():
+      if len(dyn_size.shape) == 0 or dyn_size.shape[0] == 1:
+        dim_tag = DimensionTag.get_tag_from_size_tensor(dyn_size)
+        new_dyn_size = tf.broadcast_to(dyn_size, [batch_dim])
+        dim_tag.set_tag_on_size_tensor(new_dyn_size)
+        dim_tag.dyn_size = new_dyn_size  # override this explicitly: dim_tag.set_tag_on_size_tensor does not reset it.
+        self.output.size_placeholder[i] = new_dyn_size
 
   @classmethod
   def get_out_data_from_opts(cls, name, axis, description, sources, **kwargs):
