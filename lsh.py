@@ -50,27 +50,37 @@ def add_lsh_attention_layer(
   assert hash_mask_value > num_hashes
   assert chunk_alignment in {'identity', 'search_bounds_centered'}
 
-  def chunk_query_sequence(name, pad_value):
+  def chunk_query_sequence(name, pad_value, have_feature_dim=False):
     """
     :param str name:
     :param float pad_value:
+    :param bool have_feature_dim:
     """
-    d[output + '_sorted_chunked_%s_unnamed' % name] = {
+    d[output + '_sorted_chunked_%s_%s' % (name, 'unnamed' if have_feature_dim else 'feature')] = {
       'class': 'split_dims', 'from': [output + '_sorted_%s' % name], 'pad_value': pad_value,
       'axis': query_time_axis, 'dims': [-1, query_chunk_size]}  # [B,n,r,query-chunk,query-window,F] :: query-time
+    if not have_feature_dim:
+      d[output + '_sorted_chunked_%s_unnamed' % name] = {
+        'class': 'reinterpret_data', 'from': [output + '_sorted_chunked_%s_feature' % name],
+        'set_axes': {'F': None}}  # [B,n,r,query-chunk,query-window,F] :: query-time
     d[output + '_sorted_chunked_%s' % name] = {
       'class': 'name_axis', 'axis': ['T', 'T+1'], 'description': ['query-chunk', 'query-window'],
       'from': [
         output + '_sorted_chunked_%s_unnamed' % name]}  # [B,n,r,query-chunk,query-window,F] :: query-time
 
-  def chunk_key_sequence(name, pad_value):
+  def chunk_key_sequence(name, pad_value, have_feature_dim=False):
     """
     :param str name:
     :param float pad_value:
+    :param bool have_feature_dim:
     """
-    d[output + '_sorted_chunked_%s_unnamed' % name] = {
+    d[output + '_sorted_chunked_%s_%s' % (name, 'unnamed' if have_feature_dim else 'feature')] = {
       'class': 'split_dims', 'from': [output + '_sorted_%s' % name], 'pad_value': pad_value,
       'axis': key_time_axis, 'dims': [-1, key_chunk_size]}  # [B,n,r,key-chunk,key-window,F] :: key-time
+    if not have_feature_dim:
+      d[output + '_sorted_chunked_%s_unnamed' % name] = {
+        'class': 'reinterpret_data', 'from': [output + '_sorted_chunked_%s_feature' % name],
+        'set_axes': {'F': None}}  # [B,n,r,key-chunk,key-window,F] :: key-time
     d[output + '_sorted_chunked_%s' % name] = {
       'class': 'name_axis', 'axis': ['T', 'T+1'], 'description': ['key-chunk', 'key-window'],
       'from': [output + '_sorted_chunked_%s_unnamed' % name]}  # [B,n,r,key-chunk,key-window,F] :: key-time
@@ -121,6 +131,13 @@ def add_lsh_attention_layer(
     'class': 'scatter_nd', 'from': [output + '_queries_all_indices'],
     'position': output + '_sorted_queries_orig_indices', 'position_axis': query_time_axis,
     'output_dim_via_time_from': output + '_sorted_queries_orig_indices'}  # [B,n,r,query-time] :: sorted-query-time
+  d[output + '_keys_all_indices'] = {
+    'class': 'range_in_axis', 'from': [keys_input], 'axis': key_time_axis,
+    'keepdims': False}  # [key-time] :: key-time
+  d[output + '_keys_sort_indices'] = {
+    'class': 'scatter_nd', 'from': [output + '_keys_all_indices'],
+    'position': output + '_sorted_keys_orig_indices', 'position_axis': key_time_axis,
+    'output_dim_via_time_from': output + '_sorted_keys_orig_indices'}  # [B,n,r,key-time] :: sorted-key-time
 
   # Sort hashes themselves
   d[output + '_sorted_queries_hashed'] = {
@@ -156,9 +173,9 @@ def add_lsh_attention_layer(
     'position': output + '_sorted_keys_orig_indices'}  # [B,sorted-key-time,n,r,F|d_v]
 
   # Chunk the sorted queries and keys and values
-  chunk_query_sequence('queries', pad_value=0.0)  # [B,n,r,query-chunk,query-window,F|d_k]
-  chunk_key_sequence('keys', pad_value=0.0)  # [B,n,r,key-chunk,key-window,F|d_k]
-  chunk_key_sequence('values', pad_value=0.0)  # [B,n,r,key-chunk,key-window,F|d_v]
+  chunk_query_sequence('queries', pad_value=0.0, have_feature_dim=True)  # [B,n,r,query-chunk,query-window,F|d_k]
+  chunk_key_sequence('keys', pad_value=0.0, have_feature_dim=True)  # [B,n,r,key-chunk,key-window,F|d_k]
+  chunk_key_sequence('values', pad_value=0.0, have_feature_dim=True)  # [B,n,r,key-chunk,key-window,F|d_v]
 
   # Compute chunk alignment from query chunks to a fixed-sized set of key chunks
   if chunk_alignment == 'identity':
@@ -323,10 +340,13 @@ def add_lsh_attention_layer(
     'class': 'switch', 'condition': output + '_sorted_chunked_small_mask',
     'true_from': small_mask_value,
     'false_from': output + '_sorted_chunked_energy_unmasked2'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
-  d[output + '_sorted_chunked_energy'] = {
+  d[output + '_sorted_chunked_energy_feature'] = {
     'class': 'switch', 'condition': output + '_sorted_chunked_final_mask',
     'true_from': 0.0,  # value does not matter, but must be finite
     'false_from': output + '_sorted_chunked_energy_unmasked3'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  d[output + '_sorted_chunked_energy'] = {
+    'class': 'reinterpret_data', 'from': [output + '_sorted_chunked_energy_feature'],
+    'set_axes': {'F': None}}  # [B,n,r,query-chunk,query-window,stacked-key-window]
 
   # Compute attention output of each round
   d[output + '_sorted_chunked_energy_logsumexp'] = {
