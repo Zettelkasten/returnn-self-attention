@@ -56,7 +56,7 @@ class NameAxisLayer(_ConcatInputLayer):
             break
           except:
             continue
-        assert found_ax is not None, '%r: axis %r not found in %r' % (self, ax, data)
+        assert found_ax is not None, '%r: axis %r not found in %r' % (cls, ax, data)
         ax = found_ax
       if isinstance(ax, str) and len(ax) >= 3 and ax[-2] == '+':
         ax_offset = int(ax[-1])
