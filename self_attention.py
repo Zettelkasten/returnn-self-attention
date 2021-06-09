@@ -199,7 +199,7 @@ argsort_eval = 'tf.argsort(source(0), axis=source(0, as_data=True).get_axis_from
 
 
 def make_lsh_hash_gen(d, output, key_dim, num_hashes, num_heads, num_rounds,
-                      ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0):
+                      hash_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0):
   """
   :param dict[str,dict] d: the network dict to write into
   :param str output: prefix of all layers generated. Output is written into output + '_hash_gen' layer.
@@ -207,12 +207,12 @@ def make_lsh_hash_gen(d, output, key_dim, num_hashes, num_heads, num_rounds,
   :param int num_hashes:
   :param int num_heads:
   :param int num_rounds:
-  :param str ff_init: initializer for the hash generator matrix
+  :param str hash_init: initializer for the hash generator matrix
   """
   assert num_hashes % 2 == 0
   d[output + '_top_unnamed'] = {
     'class': 'variable', 'shape': (num_heads, num_rounds, key_dim, num_hashes // 2),
-    'trainable': False, 'init': ff_init, 'add_batch_axis': True}  # [B,n,r,d_k,F|d_h/2]
+    'trainable': False, 'init': hash_init, 'add_batch_axis': True}  # [B,n,r,d_k,F|d_h/2]
   d[output + '_top'] = {
     'class': 'name_axis', 'axis': ['static:0', 'static:1'], 'description': ['att-heads', 'att-rounds'],
     'from': [output + '_top_unnamed']}  # [B,n,r,d_k,F|d_h/2]
@@ -439,7 +439,7 @@ def legacy_add_lsh_self_attention_layer(
   # Hash the key/query
   make_lsh_hash_gen(
     d, output + '_hash_gen', key_dim=key_dim, num_hashes=num_hashes, num_heads=num_heads, num_rounds=num_rounds,
-    ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
+    hash_init=ff_init)  # [B,n,r,d_k,F|d_h]
   apply_lsh_hash_gen(
     d, input=output + '_kq', hash_gen_input=output + '_hash_gen', output=output + '_kq_hash',
     time_axis=time_axis, hash_mask_value=None)  # [B,T|classes?,n,r] :: d_h

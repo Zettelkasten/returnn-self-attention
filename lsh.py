@@ -5,9 +5,9 @@ def add_lsh_attention_layer(
   d, queries_input, keys_input, values_input, output, *,
   query_time_axis, key_time_axis, num_heads=8, num_rounds=1, key_dim=64, value_dim=64, dropout=0.0,
   num_hashes, query_chunk_size, key_chunk_size, key_chunks_before=None, key_chunks_after=None,
-  ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
+  hash_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   small_mask_value=float(-10**5),
-  past_only=None, mask_current=None, mask_different_hashes=True, fallback_mode=None, allow_duplicate_attention=False,
+  past_only=None, mask_current=None, mask_different_hashes=True, allow_duplicate_attention=False,
   chunk_alignment, debug_print=False):
   """
   Computes LSH attention for an entire sequence.
@@ -29,7 +29,7 @@ def add_lsh_attention_layer(
   :param int key_chunk_size:
   :param int|None key_chunks_before:
   :param int|None key_chunks_after:
-  :param str ff_init:
+  :param str hash_init: for hash generator matrices
   :param float small_mask_value:
   :param None|bool past_only: for self attention
   :param None|bool mask_current: for self attention
@@ -103,7 +103,7 @@ def add_lsh_attention_layer(
   # Hash the queries and keys
   make_lsh_hash_gen(
     d, output + '_hash_gen', key_dim=key_dim, num_hashes=num_hashes, num_heads=num_heads, num_rounds=num_rounds,
-    ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
+    hash_init=hash_init)  # [B,n,r,d_k,F|d_h]
   for neg, mask_value in [('', hash_mask_value), ('_neg_mask', -hash_mask_value)]:
     apply_lsh_hash_gen(
       d, input=queries_input, hash_gen_input=output + '_hash_gen', output=output + '_queries_hashed%s' % neg,
@@ -544,7 +544,7 @@ def add_lsh_self_attention_layer(
     output=output, query_time_axis=time_axis_, key_time_axis=time_axis_,
     num_heads=num_heads, num_rounds=num_rounds, key_dim=key_dim, value_dim=value_dim, dropout=dropout,
     num_hashes=num_hashes, query_chunk_size=chunk_size, key_chunk_size=chunk_size,
-    key_chunks_before=chunks_before, key_chunks_after=chunks_after, ff_init=ff_init,
+    key_chunks_before=chunks_before, key_chunks_after=chunks_after, hash_init=ff_init,
     small_mask_value=small_mask_value, past_only=past_only, mask_current=mask_current,
     mask_different_hashes=mask_different_hashes, allow_duplicate_attention=allow_duplicate_attention,
     chunk_alignment=chunk_alignment, debug_print=debug_print)

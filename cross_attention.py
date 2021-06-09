@@ -146,7 +146,7 @@ def add_full_lsh_cross_attention_layer(
   assert mask_different_hashes, 'can just call add_vanilla_cross_attention_layer(..) instead'
   make_lsh_hash_gen(
     db, output + '_hash_gen', key_dim=key_dim, num_hashes=num_hashes, num_heads=num_heads, num_rounds=num_rounds,
-    ff_init=ff_init)  # [B,n,r,d_k,F|d_h]
+    hash_init=ff_init)  # [B,n,r,d_k,F|d_h]
   apply_lsh_hash_gen(
     d, input=output + '_query', hash_gen_input='base:' + output + '_hash_gen', output=output + '_query_hash',
     time_axis=query_time_axis, hash_mask_value=None)  # [B,n,r,query-T?] :: d_h
@@ -187,6 +187,7 @@ def add_lsh_cross_attention_layer(
   num_heads=8, num_rounds=1, key_dim=64, value_dim=64, dropout=0.0, num_hashes, key_chunk_size, query_chunk_size,
   key_chunks_before=None, key_chunks_after=None,
   ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
+  hash_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   small_mask_value=float(-10**5), mask_different_hashes=True, allow_duplicate_attention=False,
   chunk_alignment, debug_print=False):
   query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
@@ -209,7 +210,7 @@ def add_lsh_cross_attention_layer(
     values_input='base:' + output + '_value', output=output, query_time_axis='stag:rec-history',
     key_time_axis=key_time_axis, num_heads=num_heads, num_rounds=num_rounds, key_dim=key_dim, value_dim=value_dim,
     dropout=dropout, num_hashes=num_hashes, query_chunk_size=query_chunk_size, key_chunk_size=key_chunk_size,
-    key_chunks_before=key_chunks_before, key_chunks_after=key_chunks_after, ff_init=ff_init,
+    key_chunks_before=key_chunks_before, key_chunks_after=key_chunks_after, hash_init=hash_init,
     small_mask_value=small_mask_value, mask_different_hashes=mask_different_hashes,
     allow_duplicate_attention=allow_duplicate_attention, chunk_alignment=chunk_alignment,
     debug_print=debug_print)
