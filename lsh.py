@@ -1,3 +1,6 @@
+import numpy as np
+from tensorflow.python.ops import init_ops
+
 from self_attention import make_lsh_hash_gen, apply_lsh_hash_gen, argsort_eval, normalize_eval
 
 
@@ -553,3 +556,83 @@ def add_lsh_self_attention_layer(
     d[output + '_att'] = {'class': 'gather', 'from': [output + '_att_all'], 'position': ':i', 'axis': time_axis_}
   else:
     d[output + '_att'] = {'class': 'copy', 'from': [output + '_att_all']}
+
+
+def bincount_nd(tensor, minlength=None, axis=None):
+  """
+  Batched tf.bincount, taken and adapted from https://stackoverflow.com/a/54113574/2766231
+
+  :param tf.Tensor tensor:
+  :param None|int|tf.Tensor minlength:
+  :param int|None axis:
+  :rtype: tf.Tensor
+  """
+  import tensorflow as tf
+  if axis is None:
+    return tf.math.bincount(tensor, minlength=minlength)
+  else:
+    if axis < 0:
+      axis += len(tensor.shape)
+    assert 0 <= axis < len(tensor.shape)
+    if axis != len(tensor.shape) - 1:
+      raise NotImplementedError()
+
+    flat = tf.reshape(tensor, [-1, tensor.shape[-1]])
+    num_classes = tf.maximum(tf.reduce_max(tensor) + 1, minlength)
+    count = tf.map_fn(lambda x: tf.math.bincount(x, minlength=num_classes), flat)
+    res = tf.reshape(count, tuple(tensor.shape[:-1]) + (num_classes,))
+    return res
+
+
+class EquallyDistributedHashInitializer(init_ops.Initializer):
+  """
+  Generates a hash matrix where the hash classes are distributed most equally.
+  """
+
+  def __init__(self, base_initializer, num_hash_init_samples=10, num_key_samples=1000):
+    """
+    :param init_ops.Initializer base_initializer:
+    :param int num_hash_init_samples:
+    :param int num_key_samples:
+    """
+    self.base_initializer = base_initializer
+    self.num_hash_init_samples = num_hash_init_samples
+    self.num_key_samples = num_key_samples
+    assert getattr(base_initializer, 'seed', None) is None
+
+  def __call__(self, shape, dtype=None, partition_info=None):
+    """
+    :param tuple[int] shape: [..., key_dim, num_hashes // 2]
+    :param None|tf.DType dtype:
+    :param partition_info:
+    :rtype: tf.Tensor
+    """
+    import tensorflow as tf
+    assert len(shape) >= 2
+    key_dim, num_hashes = shape[-2:]
+
+    sampled_hash_gen_top = tf.stack([
+      self.base_initializer(shape=shape, dtype=dtype, partition_info=partition_info)
+      for _ in range(self.num_hash_init_samples)], axis=len(shape) - 2)  # [..., init_sample, key_dim, num_hashes // 2]
+
+    # sample keys (same key for each hash init)
+    sampled_keys = init_ops.RandomNormal()(shape=(self.num_key_samples, key_dim), dtype=dtype)  # [key_sample, key_dim]
+
+    # compute distribution for each and choose the one where the size of the smallest hash class is maximized
+    sampled_hash_gen = tf.concat(
+      [sampled_hash_gen_top, -sampled_hash_gen_top], axis=-1)  # [..., init_sample, key_dim, num_hashes]
+    sampled_hash_dense = tf.matmul(sampled_keys, sampled_hash_gen)  # [..., init_sample, key_sample, num_hashes]
+    sampled_hash = tf.argmax(sampled_hash_dense, axis=-1, output_type='int32')  # [..., init_sample, key_sample]
+    sampled_hash_counts = bincount_nd(sampled_hash, axis=-1, minlength=num_hashes)  # [..., init_sample, num_hashes]
+    from returnn.tf.util.basic import py_print
+    sampled_hash_std = tf.math.reduce_std(
+      tf.cast(sampled_hash_counts, 'float32') / self.num_key_samples, axis=-1)  # [..., init_sample]
+    best_sample = tf.argmin(sampled_hash_std, axis=-1)  # [...]
+    best_sampled_hash_gen_top = tf.gather(
+      params=sampled_hash_gen_top, indices=best_sample, axis=len(shape) - 2,
+      batch_dims=len(shape) - 2)  # [..., key_dim, num_hashes // 2]
+    assert best_sampled_hash_gen_top.shape == shape
+    return best_sampled_hash_gen_top
+
+
+globals()['EquallyDistributedHashInitializer'] = EquallyDistributedHashInitializer

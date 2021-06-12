@@ -2,6 +2,8 @@ import sys
 
 from typing import Any
 
+import numpy as np
+
 sys.path.insert(1, '/u/petrick/software/returnn/official/')
 sys.path.insert(1, '/u/petrick/software/returnn/official/tests')
 sys.path.insert(1, '/u/petrick/lsh/playground/encoder_lsh')
@@ -17,7 +19,7 @@ from returnn.tf.network import *
 from returnn.tf.layers.basic import *
 
 from self_attention import *
-from lsh import add_lsh_self_attention_layer
+from lsh import add_lsh_self_attention_layer, EquallyDistributedHashInitializer
 from cross_attention import *
 
 
@@ -599,6 +601,75 @@ def test_lsh_cross_attention_no_mask_different_hashes():
     n_time=13, mask_current=False, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True)
   _test_lsh_cross_attention_no_mask_different_hashes(
     n_time=13, mask_current=True, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True)
+
+
+def _bincount_nd(x, axis, minlength=0):
+  """
+  :param np.ndarray x:
+  :param int axis:
+  :param int minlength:
+  :rtype: np.ndarray
+  """
+  if axis < 0:
+    axis += x.ndim
+  assert 0 <= axis < x.ndim
+  x_axis_last = np.swapaxes(x, axis, -1)
+  x_flat = np.reshape(x, (-1, x_axis_last.shape[-1]))  # [..., axis]
+  num_classes = np.maximum(minlength, np.max(x_flat) + 1)
+  y_flat = np.zeros((x_flat.shape[0], num_classes), dtype='int64')
+  for batch in range(x_flat.shape[0]):
+    y_flat[batch] = np.bincount(x_flat[batch], minlength=num_classes)
+  y_axis_last = np.reshape(y_flat, x_axis_last.shape[:-1] + (num_classes,))  # [..., axis]
+  y = np.swapaxes(y_axis_last, axis, -1)
+  return y
+
+
+def test_EquallyDistributedHashInitializer():
+  with make_scope() as sess:
+    num_heads, num_rounds, key_dim, num_hashes = 200, 1, 64, 8
+    init = EquallyDistributedHashInitializer(
+      base_initializer=tf_compat.v1.glorot_uniform_initializer(), num_hash_init_samples=10, num_key_samples=1000)
+    var = tf_compat.v1.get_variable(
+      shape=(num_heads, num_rounds, key_dim, num_hashes // 2), initializer=init, name='hash_gen_top', trainable=False)
+    sess.run(tf_compat.v1.global_variables_initializer())
+    hash_gen_top = sess.run(var)  # [num_heads, num_rounds, key_dim, num_hashes // 2]
+    assert hash_gen_top.shape == (num_heads, num_rounds, key_dim, num_hashes // 2)
+    hash_gen = np.concatenate([hash_gen_top, -hash_gen_top], axis=-1)  # [num_heads, num_rounds, key_dim, num_hashes]
+
+    def get_shares(hash_gen, num_key_samples=10000):
+      """
+      :param np.ndarray hash_gen: [..., key_dim, num_hashes]
+      :param int num_key_samples:
+      :rtype: list[float]
+      :return: probability distribution (hash class -> relative size)
+      """
+      assert len(hash_gen.shape) >= 2
+      key_dim, num_hashes = hash_gen.shape[-2:]
+      key_samples = np.random.standard_normal(size=(num_key_samples, key_dim))  # [key_sample, key_dim]
+      key_hash_dense = np.matmul(key_samples, hash_gen)  # [..., key_sample, num_hashes]
+      key_hash = np.argmax(key_hash_dense, axis=-1)  # [..., key_sample]
+      hash_counts = _bincount_nd(key_hash, axis=-1, minlength=num_hashes)  # [..., num_hashes]
+      assert hash_counts.shape[-1] == num_hashes
+      hash_shares = hash_counts.astype('float64') / num_key_samples  # [..., num_hashes]
+      np.testing.assert_almost_equal(np.sum(hash_shares, axis=-1), 1)
+      assert hash_shares.shape == hash_gen.shape[:-2] + (num_hashes,)
+      return hash_shares
+
+  from pprint import pprint
+
+  ideal_share = 1 / num_hashes
+  actual_shares = get_shares(hash_gen)  # [num_heads, num_rounds, num_hashes]
+  print("Distribution of hash classes:")
+  pprint(actual_shares)
+  actual_std = np.std(actual_shares, axis=-1)  # [num_heads, num_rounds]
+  print("With standard deviations:")
+  pprint(actual_std)
+  smallest_class_size = np.min(actual_shares, axis=-1)  # [num_heads, num_rounds, num_hashes]
+  largest_class_size = np.max(actual_shares, axis=-1)  # [num_heads, num_rounds, num_hashes]
+  assert np.all(smallest_class_size <= ideal_share)
+  assert np.all(largest_class_size >= ideal_share)
+  assert np.all(smallest_class_size > 0.7 * ideal_share)
+  assert np.all(largest_class_size < 1.3 * ideal_share)
 
 
 if __name__ == "__main__":
