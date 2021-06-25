@@ -635,4 +635,40 @@ class EquallyDistributedHashInitializer(init_ops.Initializer):
     return best_sampled_hash_gen_top
 
 
-globals()['EquallyDistributedHashInitializer'] = EquallyDistributedHashInitializer
+class WrapFuncInitializer(init_ops.Initializer):
+  """
+  Wraps an initializer in some TF ops.
+  """
+  def __init__(self, base_initializer, wrap_func, *args, **kwargs):
+    self.base_initializer = base_initializer
+    self.wrap_func = wrap_func
+    self.args = args
+    self.kwargs = kwargs
+
+    if not hasattr(self.base_initializer, "seed"):
+      delattr(self, "seed")
+
+  @property
+  def seed(self):
+    """
+    :rtype: int
+    """
+    assert hasattr(self.base_initializer, "seed")
+    return self.base_initializer.seed
+
+  @seed.setter
+  def seed(self, seed):
+    """
+    :param int seed:
+    """
+    assert hasattr(self.base_initializer, "seed")
+    self.base_initializer.seed = seed
+
+  def __call__(self, *args, **kwargs):
+    """
+    :param tuple[int] shape:
+    :param None|tf.DType dtype:
+    :param partition_info:
+    :rtype: tf.Tensor
+    """
+    return self.wrap_func(self.base_initializer(*args, **kwargs), *self.args, **self.kwargs)
