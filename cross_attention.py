@@ -189,7 +189,7 @@ def add_lsh_cross_attention_layer(
   ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   hash_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   small_mask_value=float(-10**5), mask_different_hashes=True, allow_duplicate_attention=False,
-  chunk_alignment, debug_print=False):
+  chunk_alignment, shuffle_kv=False, debug_print=False):
   query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
   assert keys_input.startswith('base:')
   keys_input = keys_input[len('base:'):]
@@ -212,7 +212,7 @@ def add_lsh_cross_attention_layer(
     dropout=dropout, num_hashes=num_hashes, query_chunk_size=query_chunk_size, key_chunk_size=key_chunk_size,
     key_chunks_before=key_chunks_before, key_chunks_after=key_chunks_after, hash_init=hash_init,
     small_mask_value=small_mask_value, mask_different_hashes=mask_different_hashes,
-    allow_duplicate_attention=allow_duplicate_attention, chunk_alignment=chunk_alignment,
+    allow_duplicate_attention=allow_duplicate_attention, chunk_alignment=chunk_alignment, shuffle_kv=shuffle_kv,
     debug_print=debug_print)
 
   # Select the context vector for the query we actually want

@@ -11,7 +11,7 @@ def add_lsh_attention_layer(
   hash_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   small_mask_value=float(-10**5),
   past_only=None, mask_current=None, mask_different_hashes=True, allow_duplicate_attention=False,
-  chunk_alignment, debug_print=False):
+  chunk_alignment, shuffle_kv=False, debug_print=False):
   """
   Computes LSH attention for an entire sequence.
 
@@ -39,6 +39,7 @@ def add_lsh_attention_layer(
   :param bool mask_different_hashes:
   :param bool allow_duplicate_attention:
   :param str chunk_alignment:
+  :param bool shuffle_kv:
   :param bool debug_print:
   """
   assert query_time_axis.startswith('stag:') and key_time_axis.startswith('stag:')
@@ -122,6 +123,29 @@ def add_lsh_attention_layer(
     apply_lsh_hash_gen(
       d, input=keys_input, hash_gen_input=output + '_hash_gen', output=output + '_keys_hashed%s' % neg,
       time_axis=key_time_axis, hash_mask_value=mask_value)  # [B,key-time,n,r] :: d_h
+
+  # Maybe shuffle the keys and values
+  if shuffle_kv:
+    # We apply hash gen BEFORE we shuffle the keys, because apply_lsh_hash_gen applies the masking using the seq
+    # lengths.
+    d[output + '_keys_shuffled_indices'] = {
+      'class': 'eval', 'from': [output + '_keys_all_indices'],
+      'eval': 'tf.random.shuffle(source(0))'}  # [key-time] :: (shuffled-)key-time
+    assert output + '_keys_hashed' in d and output + '_keys_hashed_not_shuffled' not in d
+    d[output + '_keys_hashed_not_shuffled'] = d[output + '_keys_hashed']
+    d[output + '_keys_hashed'] = {
+      'class': 'gather', 'from': [output + '_keys_hashed_not_shuffled'], 'position': output + '_keys_shuffled_indices',
+      'axis': key_time_axis}  # [B,(shuffled-)key-time,n,r] :: d_h
+    assert output + '_shuffled_keys' not in d
+    d[output + '_shuffled_keys'] = {
+      'class': 'gather', 'from': [keys_input], 'position': output + '_keys_shuffled_indices',
+      'axis': key_time_axis}  # [B,(shuffled-)key-time,n,r,F|d_k]
+    keys_input = output + '_shuffled_keys'
+    assert output + '_shuffled_values' not in d
+    d[output + '_shuffled_values'] = {
+      'class': 'gather', 'from': [values_input], 'position': output + '_keys_shuffled_indices',
+      'axis': key_time_axis}  # [B,(shuffled-)key-time,n,r,F|d_v]
+    values_input = output + '_shuffled_values'
 
   # Compute a permutation by looking at the unsorted hashes
   d[output + '_sorted_queries_orig_indices'] = {

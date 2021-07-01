@@ -415,7 +415,8 @@ def test_full_lsh_cross_attention_construct():
 
 
 def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
-    enc_time, dec_time, chunk_size, chunks_before, chunks_after, num_heads=2, num_hashes=6, chunk_align='identity'):
+    enc_time, dec_time, chunk_size, chunks_before, chunks_after, num_heads=2, num_hashes=6, chunk_align='identity',
+    shuffle_kv=False):
   key_dim, value_dim = 3, 3
   net_dict = {
     'encoder': {'class': 'linear', 'n_out': 5, 'activation': None},
@@ -447,7 +448,7 @@ def _test_lsh_cross_attention_equals_full_lsh_cross_attention(
     d=net_dict['output']['unit'], db=net_dict, input='embed', keys_input='base:encoder',
     output='chunked_att', num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
     key_chunk_size=chunk_size, query_chunk_size=chunk_size, key_chunks_before=chunks_before,
-    key_chunks_after=chunks_after, debug_print=False, chunk_alignment=chunk_align)
+    key_chunks_after=chunks_after, debug_print=False, chunk_alignment=chunk_align, shuffle_kv=shuffle_kv)
   net_dict['output']['unit']['chunked_att_att']['is_output_layer'] = True
   net_dict['output']['unit']['full_att_att']['is_output_layer'] = True
   net_dict['output']['unit']['chunked_att_query0']['reuse_params'] = 'full_att_query0'
@@ -513,9 +514,21 @@ def test_lsh_cross_attention_equals_full_lsh_cross_attention():
     enc_time=15, dec_time=10, chunk_size=5, chunks_before=1, chunks_after=1, chunk_align='search_bounds_centered')
 
 
+def test_lsh_cross_attention_equals_full_lsh_cross_attention_shuffle_kv():
+  _test_lsh_cross_attention_equals_full_lsh_cross_attention(
+    enc_time=5, dec_time=1, chunk_size=5, chunks_before=0, chunks_after=0, num_heads=1, num_hashes=4,
+    chunk_align='identity', shuffle_kv=True)
+  _test_lsh_cross_attention_equals_full_lsh_cross_attention(
+    enc_time=5, dec_time=1, chunk_size=6, chunks_before=0, chunks_after=0, num_heads=1, num_hashes=4,
+    chunk_align='search_bounds_centered', shuffle_kv=True)
+  _test_lsh_cross_attention_equals_full_lsh_cross_attention(
+    enc_time=15, dec_time=10, chunk_size=5, chunks_before=1, chunks_after=1, chunk_align='search_bounds_centered',
+    shuffle_kv=True)
+
+
 def _test_lsh_cross_attention_no_mask_different_hashes(
     n_time, mask_current, chunk_size, chunks_before, chunks_after, duplicates, n_batch=3,
-    num_heads=2, key_dim=3, value_dim=3, num_hashes=26, chunk_align='identity'):
+    num_heads=2, key_dim=3, value_dim=3, num_hashes=26, chunk_align='identity', shuffle_kv=False):
   print(
     'Testing n_time =', n_time, 'mask_current =', mask_current, 'chunk_size =', chunk_size,
     'chunks_before =', chunks_before, 'chunks_after =', chunks_after, 'allow_duplicate_attention =', duplicates,
@@ -550,7 +563,7 @@ def _test_lsh_cross_attention_no_mask_different_hashes(
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes,
       key_chunk_size=chunk_size, query_chunk_size=chunk_size, key_chunks_before=chunks_before,
       key_chunks_after=chunks_after, mask_different_hashes=False,
-      allow_duplicate_attention=duplicates, chunk_alignment=chunk_align, debug_print=False)
+      allow_duplicate_attention=duplicates, chunk_alignment=chunk_align, shuffle_kv=shuffle_kv, debug_print=False)
     add_vanilla_cross_attention_layer(
       net_dict['output']['unit'], net_dict, input='embed', keys_input='base:encoder', output='vanilla',
       num_heads=num_heads, key_dim=key_dim, value_dim=value_dim)
@@ -601,6 +614,10 @@ def test_lsh_cross_attention_no_mask_different_hashes():
     n_time=13, mask_current=False, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True)
   _test_lsh_cross_attention_no_mask_different_hashes(
     n_time=13, mask_current=True, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True)
+  _test_lsh_cross_attention_no_mask_different_hashes(
+    n_time=13, mask_current=False, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True, shuffle_kv=True)
+  _test_lsh_cross_attention_no_mask_different_hashes(
+    n_time=13, mask_current=True, chunk_size=5, chunks_before=1, chunks_after=1, duplicates=True, shuffle_kv=True)
 
 
 def _bincount_nd(x, axis, minlength=0):
