@@ -103,6 +103,14 @@ def add_lsh_attention_layer(
       'axis': 'stag:query-chunk+1',
       'description': 'stacked-key-window'}  # [B,n,r,query-chunk,stacked-key-window,F]
 
+  # Receive sequence positions
+  d[output + '_keys_all_indices'] = {
+    'class': 'range_in_axis', 'from': [keys_input], 'axis': key_time_axis,
+    'keepdims': False}  # [key-time] :: key-time
+  d[output + '_queries_all_indices'] = {
+    'class': 'range_in_axis', 'from': [queries_input], 'axis': query_time_axis,
+    'keepdims': False}  # [query-time] :: query-time
+
   # Hash the queries and keys
   make_lsh_hash_gen(
     d, output + '_hash_gen', key_dim=key_dim, num_hashes=num_hashes, num_heads=num_heads, num_rounds=num_rounds,
@@ -127,20 +135,10 @@ def add_lsh_attention_layer(
   stack_chunked_key_sequence('keys_orig_indices')  # [B,n,r,query-chunk,stacked-key-window] :: key-time
 
   # Invert permutation to undo sorting later
-  d[output + '_queries_all_indices'] = {
-    'class': 'range_in_axis', 'from': [queries_input], 'axis': query_time_axis,
-    'keepdims': False}  # [query-time] :: query-time
   d[output + '_queries_sort_indices'] = {
     'class': 'scatter_nd', 'from': [output + '_queries_all_indices'],
     'position': output + '_sorted_queries_orig_indices', 'position_axis': query_time_axis,
     'output_dim_via_time_from': output + '_sorted_queries_orig_indices'}  # [B,n,r,query-time] :: sorted-query-time
-  d[output + '_keys_all_indices'] = {
-    'class': 'range_in_axis', 'from': [keys_input], 'axis': key_time_axis,
-    'keepdims': False}  # [key-time] :: key-time
-  d[output + '_keys_sort_indices'] = {
-    'class': 'scatter_nd', 'from': [output + '_keys_all_indices'],
-    'position': output + '_sorted_keys_orig_indices', 'position_axis': key_time_axis,
-    'output_dim_via_time_from': output + '_sorted_keys_orig_indices'}  # [B,n,r,key-time] :: sorted-key-time
 
   # Sort hashes themselves
   d[output + '_sorted_queries_hashed'] = {
