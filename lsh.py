@@ -11,7 +11,7 @@ def add_lsh_attention_layer(
   hash_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   small_mask_value=float(-10**5),
   past_only=None, mask_current=None, mask_different_hashes=True, allow_duplicate_attention=False,
-  chunk_alignment, shuffle_kv=False, debug_print=False):
+  chunk_alignment, shuffle_kv=False, query_hash_dropin=0.0, key_hash_dropin=0.0, debug_print=False):
   """
   Computes LSH attention for an entire sequence.
 
@@ -40,6 +40,8 @@ def add_lsh_attention_layer(
   :param bool allow_duplicate_attention:
   :param str chunk_alignment:
   :param bool shuffle_kv:
+  :param float query_hash_dropin: chance of assigning a random hash to a query
+  :param float key_hash_dropin: chance of assigning a random hash to a key
   :param bool debug_print:
   """
   assert query_time_axis.startswith('stag:') and key_time_axis.startswith('stag:')
@@ -119,10 +121,12 @@ def add_lsh_attention_layer(
   for neg, mask_value in [('', hash_mask_value), ('_neg_mask', -hash_mask_value)]:
     apply_lsh_hash_gen(
       d, input=queries_input, hash_gen_input=output + '_hash_gen', output=output + '_queries_hashed%s' % neg,
-      time_axis=query_time_axis, hash_mask_value=mask_value)  # [B,query-time,n,r] :: d_h
+      time_axis=query_time_axis, num_hashes=num_hashes, hash_mask_value=mask_value,
+      hash_dropin=query_hash_dropin)  # [B,query-time,n,r] :: d_h
     apply_lsh_hash_gen(
       d, input=keys_input, hash_gen_input=output + '_hash_gen', output=output + '_keys_hashed%s' % neg,
-      time_axis=key_time_axis, hash_mask_value=mask_value)  # [B,key-time,n,r] :: d_h
+      time_axis=key_time_axis, num_hashes=num_hashes, hash_mask_value=mask_value,
+      hash_dropin=key_hash_dropin)  # [B,key-time,n,r] :: d_h
 
   # Maybe shuffle the keys and values
   if shuffle_kv:

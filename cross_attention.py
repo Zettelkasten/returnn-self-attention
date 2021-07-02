@@ -149,10 +149,10 @@ def add_full_lsh_cross_attention_layer(
     hash_init=ff_init)  # [B,n,r,d_k,F|d_h]
   apply_lsh_hash_gen(
     d, input=output + '_query', hash_gen_input='base:' + output + '_hash_gen', output=output + '_query_hash',
-    time_axis=query_time_axis, hash_mask_value=None)  # [B,n,r,query-T?] :: d_h
+    time_axis=query_time_axis, num_hashes=num_hashes, hash_mask_value=None)  # [B,n,r,query-T?] :: d_h
   apply_lsh_hash_gen(
     db, input=output + '_key', hash_gen_input=output + '_hash_gen', output=output + '_key_hash',
-    time_axis=key_time_axis, hash_mask_value=None)  # [B,n,r,key-T] :: d_h
+    time_axis=key_time_axis, num_hashes=num_hashes, hash_mask_value=None)  # [B,n,r,key-T] :: d_h
   assert num_rounds == 1, 'not implemented yet otherwise'
 
   # build and apply additional energy mask
@@ -189,7 +189,7 @@ def add_lsh_cross_attention_layer(
   ff_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   hash_init="variance_scaling_initializer(mode='fan_in', distribution='uniform', scale=%s)" % 1.0,
   small_mask_value=float(-10**5), mask_different_hashes=True, allow_duplicate_attention=False,
-  chunk_alignment, shuffle_kv=False, debug_print=False):
+  chunk_alignment, shuffle_kv=False, query_hash_dropin=0.0, key_hash_dropin=0.0, debug_print=False):
   query_time_axis, key_time_axis = _query_key_time_default(query_time_axis, key_time_axis)
   assert keys_input.startswith('base:')
   keys_input = keys_input[len('base:'):]
@@ -213,6 +213,7 @@ def add_lsh_cross_attention_layer(
     key_chunks_before=key_chunks_before, key_chunks_after=key_chunks_after, hash_init=hash_init,
     small_mask_value=small_mask_value, mask_different_hashes=mask_different_hashes,
     allow_duplicate_attention=allow_duplicate_attention, chunk_alignment=chunk_alignment, shuffle_kv=shuffle_kv,
+    query_hash_dropin=query_hash_dropin, key_hash_dropin=key_hash_dropin,
     debug_print=debug_print)
 
   # Select the context vector for the query we actually want

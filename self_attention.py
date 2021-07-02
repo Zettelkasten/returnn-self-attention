@@ -224,14 +224,17 @@ def make_lsh_hash_gen(d, output, key_dim, num_hashes, num_heads, num_rounds,
     'from': [output + '_top', output + '_bottom']}  # [B,n,r,d_k,F|d_h]
 
 
-def apply_lsh_hash_gen(d, input, hash_gen_input, output, time_axis, hash_mask_value=2 ** 31 - 1):
+def apply_lsh_hash_gen(d, input, hash_gen_input, output, num_hashes, time_axis, hash_mask_value=2 ** 31 - 1,
+                       hash_dropin=0.0):
   """
   :param dict[str,dict] d:
   :param str input:
   :param str hash_gen_input:
   :param str output:
+  :param int num_hashes:
   :param str time_axis:
   :param int|None hash_mask_value: or None if you do not want masking
+  :param float hash_dropin:
   """
   d[output + '_linear'] = {
     'class': 'dot', 'from': [hash_gen_input, input], 'debug': True,
@@ -240,13 +243,32 @@ def apply_lsh_hash_gen(d, input, hash_gen_input, output, time_axis, hash_mask_va
   d[output + '_sparse'] = {
     'class': 'reduce', 'mode': 'argmax', 'axes': 'static:-1',
     'from': [output + '_linear']}  # [B,T|classes?,n,r] :: d_h
-  d[output + '_unmasked' if hash_mask_value is not None else output] = {
+  d[output + '_actual'] = {
     'class': 'reinterpret_data', 'from': [output + '_sparse'],
     'set_sparse': False, 'set_axes': {'F': None}}  # [B,T|classes?,n,r] :: d_h
+  # DropoutLayer does not support inputs that are not of type float.
+  d[output + '_dropin_decision_ones'] = {
+    'class': 'eval', 'from': [output + '_actual'], 'eval': 'tf.ones_like(source(0), dtype="float32")',
+    'out_type': {'dtype': 'float32'}}  # [B,T|classes?,n,r] :: 1.0
+  d[output + '_dropin_decision_float'] = {
+    'class': 'dropout', 'dropout': hash_dropin, 'dropout_noise_shape': {'B': -1, 'except_time': -1, 'T': 1},
+    'from': [output + '_dropin_decision_ones']}  # [B,T|classes?,n,r] :: 0.0/1.0
+  d[output + '_dropin_decision'] = {
+    'class': 'compare', 'from': [output + '_dropin_decision_float'], 'kind': 'greater',
+    'value': 0.5}  # [B,T|classes?,n,r] :: False/True
+  d[output + '_dropin_hashes'] = {
+    'class': 'eval',
+    'eval': 'tf.random.uniform(tf.shape(source(0)), minval=0, maxval=%s, dtype="int32")' % num_hashes,
+    'from': [output + '_actual'], 'out_type': {'dtype': 'int32'}}  # [B,T|classes?,n,r] :: d_h
+  d[output + '_unmasked'] = {
+    'class': 'switch', 'condition': output + '_dropin_decision', 'true_from': output + '_actual',
+    'false_from': output + '_dropin_hashes'}  # [B,T|classes?,n,r] :: d_h
   if hash_mask_value is not None:
     d[output] = {
       'class': 'seq_len_mask', 'from': [output + '_unmasked'], 'axis': time_axis,
       'mask_value': hash_mask_value}  # [B,T|classes?,n,r] :: d_h
+  else:
+    d[output] = {'class': 'copy', 'from': [output + '_unmasked']}  # [B,T|classes?,n,r] :: d_h
 
 
 def legacy_add_lsh_self_attention_layer(
@@ -442,7 +464,7 @@ def legacy_add_lsh_self_attention_layer(
     hash_init=ff_init)  # [B,n,r,d_k,F|d_h]
   apply_lsh_hash_gen(
     d, input=output + '_kq', hash_gen_input=output + '_hash_gen', output=output + '_kq_hash',
-    time_axis=time_axis, hash_mask_value=None)  # [B,T|classes?,n,r] :: d_h
+    time_axis=time_axis, num_hashes=num_hashes, hash_mask_value=None)  # [B,T|classes?,n,r] :: d_h
 
   # Accumulate all past hashes
   d[output + '_kq_accum_hash_unsorted_unmasked'] = {
