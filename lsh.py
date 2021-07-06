@@ -50,7 +50,7 @@ def add_lsh_attention_layer(
   if key_chunks_before is None:
     key_chunks_before = 1
   if key_chunks_after is None:
-    key_chunks_after = 0 if past_only else 1
+    key_chunks_after = 0 if past_only and chunk_alignment == 'identity' else 1
   assert key_chunks_before >= 0 and key_chunks_after >= 0
   hash_mask_value = 2 ** 31 - 1
   assert hash_mask_value > num_hashes
