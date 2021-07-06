@@ -162,7 +162,7 @@ def test_lsh_self_attention_no_mask_different_hashes_no_duplicates():
 
 
 def _test_lsh_self_attention_hashing(
-    hash_sequence, chunk_size, chunks_before, chunks_after, past_only=False, chunk_align='identity'):
+    hash_sequence, chunk_size, chunks_before, chunks_after, past_only=False, chunk_align='identity', shuffle_kv=False):
   """
   :param np.ndarray hash_sequence: shape [batch, heads, rounds, time], dtype int32, with hash classes
   :return:
@@ -174,7 +174,7 @@ def _test_lsh_self_attention_hashing(
   with make_scope() as session:
     print(
       '------ Testing with chunk_size =', chunk_size, 'chunks_before =', chunks_before, 'chunks_after =', chunks_after,
-      'chunk_align =', chunk_align)
+      'chunk_align =', chunk_align, 'shuffle_kv =', shuffle_kv)
     hash_sequence = np.asarray(hash_sequence, dtype='int32')
     if len(hash_sequence.shape) == 3:
       # hash_sequence is [batch, heads, time]
@@ -194,7 +194,7 @@ def _test_lsh_self_attention_hashing(
       key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, chunk_size=chunk_size, chunks_before=chunks_before,
       chunks_after=chunks_after,
       mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False, chunk_alignment=chunk_align,
-      debug_print=False)
+      shuffle_kv=shuffle_kv, debug_print=False)
     # Now we override the keys/queries, lsh_value and lsh_kq_hash with our own inputs
     def get_kqv_sequence(self, source):
       assert source(0, as_data=True).shape == (None, num_heads, key_dim)
@@ -290,6 +290,9 @@ def test_lsh_self_attention_hashing():
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=0, past_only=True)
   _test_lsh_self_attention_hashing(
     random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False, chunk_align='search_bounds_centered')
+  _test_lsh_self_attention_hashing(
+    random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False,
+    chunk_align='search_bounds_centered', shuffle_kv=True)
 
 
 @unittest.skip('multi round hashing not implemented currently')
