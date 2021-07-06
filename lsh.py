@@ -458,7 +458,7 @@ def add_lsh_self_attention_layer(
   mask_current=True, small_mask_value=float(-10**5),
   share_key_query=True, normalize_keys=None,
   mask_different_hashes=True, allow_duplicate_attention=False,
-  chunk_alignment, debug_print=False):
+  chunk_alignment, shuffle_kv=False, debug_print=False):
   """
   Essentially this does (but for LSH attention)
     d[output + '_att'] = {"class": "self_attention", "num_heads": num_heads,
@@ -499,6 +499,7 @@ def add_lsh_self_attention_layer(
     Attending to a key twice can e.g. happen for multi-round attention,
     or if the (effective) chunk size is larger than the sequence length.
   :param str chunk_alignment:
+  :param bool shuffle_kv: whether to shuffle the keys and values before sorting them by their hashes.
   :param bool debug_print: will print layers contents for debugging
   """
   if past_only is None:
@@ -576,7 +577,7 @@ def add_lsh_self_attention_layer(
     key_chunks_before=chunks_before, key_chunks_after=chunks_after, hash_init=ff_init,
     small_mask_value=small_mask_value, past_only=past_only, mask_current=mask_current,
     mask_different_hashes=mask_different_hashes, allow_duplicate_attention=allow_duplicate_attention,
-    chunk_alignment=chunk_alignment, debug_print=debug_print)
+    chunk_alignment=chunk_alignment, shuffle_kv=shuffle_kv, debug_print=debug_print)
 
   if inside_rec_layer:
     d[output + '_att'] = {'class': 'gather', 'from': [output + '_att_all'], 'position': ':i', 'axis': time_axis_}
