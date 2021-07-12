@@ -167,6 +167,11 @@ def add_lsh_attention_layer(
     'class': 'scatter_nd', 'from': [output + '_queries_all_indices'],
     'position': output + '_sorted_queries_orig_indices', 'position_axis': query_time_axis,
     'output_dim_via_time_from': output + '_sorted_queries_orig_indices'}  # [B,n,r,query-time] :: sorted-query-time
+  # note: this is not needed for training/search, but our score job uses this to reconstruct the attention weights.
+  d[output + '_keys_sort_indices'] = {
+    'class': 'scatter_nd', 'from': [output + '_keys_all_indices'],
+    'position': output + '_sorted_keys_orig_indices', 'position_axis': key_time_axis,
+    'output_dim_via_time_from': output + '_sorted_keys_orig_indices'}  # [B,n,r,key-time] :: sorted-key-time
 
   # Sort hashes themselves
   d[output + '_sorted_queries_hashed'] = {
