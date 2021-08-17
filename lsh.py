@@ -225,6 +225,16 @@ def add_lsh_attention_layer(
   chunk_key_sequence('keys', pad_value=0.0, have_feature_dim=True)  # [B,n,r,key-chunk,key-window,F|d_k]
   chunk_key_sequence('values', pad_value=0.0, have_feature_dim=True)  # [B,n,r,key-chunk,key-window,F|d_v]
 
+  # Compute invalid positions
+  d[output + '_sorted_chunked_mask_valid_query_position'] = {
+    'class': 'compare',
+    'from': [output + '_sorted_chunked_queries_hashed'], 'value': hash_mask_value,
+    'kind': 'equal'}  # [B,n,r,query-chunk,query-window]
+  d[output + '_sorted_chunked_mask_valid_key_position'] = {
+    'class': 'compare',
+    'from': [output + '_sorted_chunked_stacked_keys_hashed'], 'value': hash_mask_value,
+    'kind': 'equal'}  # [B,n,r,query-chunk,stacked-key-window]
+
   # Compute chunk alignment from query chunks to a fixed-sized set of key chunks
   if chunk_alignment == 'identity':
     d[output + '_query_chunk_alignment_center'] = {
@@ -337,7 +347,9 @@ def add_lsh_attention_layer(
       'kind': 'greater'}  # [round,other-round]
     d[output + '_sorted_chunked_other_round_compare_left_only'] = {
       'class': 'combine',
-      'from': [output + '_sorted_chunked_other_round_compare', output + '_round_left_only'],
+      'from': [
+        output + '_sorted_chunked_other_round_compare', output + '_round_left_only',
+        output + '_sorted_chunked_mask_valid_query_position', output + '_sorted_chunked_mask_valid_key_position'],
       'kind': 'logical_and'}  # [B,n,r,query-chunk,query-window,stacked-key-window,other-round] :: bool
     d[output + '_sorted_chunked_round_duplicate_mask'] = {
       'class': 'reduce', 'mode': 'any', 'from': [output + '_sorted_chunked_other_round_compare_left_only'],
@@ -372,10 +384,6 @@ def add_lsh_attention_layer(
       small_masking_layers_from.append(output + '_sorted_chunked_small_mask_matching_hash')
     else:
       large_masking_layers_from.append(output + '_sorted_chunked_mask_matching_hash')
-  d[output + '_sorted_chunked_mask_valid_key_position'] = {
-    'class': 'compare',
-    'from': [output + '_sorted_chunked_stacked_keys_hashed'], 'value': hash_mask_value,
-    'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
   large_masking_layers_from.append(output + '_sorted_chunked_mask_valid_key_position')
   d[output + '_sorted_chunked_mask_key_chunk_duplicates_unnamed'] = {
     'class': 'repeat', 'from': [output + '_query_chunk_alignment_duplicate_mask'],
