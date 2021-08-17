@@ -197,7 +197,7 @@ normalize_eval = 'tf.math.divide_no_nan(source(0), tf.norm(source(0), axis=sourc
 argsort_eval = 'tf.argsort(source(0), axis=source(0, as_data=True).get_axis_from_description("%s"), ' \
                'direction="ASCENDING", stable=True)'
 
-clip_eval = 'tf.where(source(0) == mask_value, 0, source(0))'
+clip_eval = 'tf.where(tf.equal(source(0), mask_value), 0, source(0))'
 
 
 def make_lsh_hash_gen(d, output, key_dim, num_hashes, num_heads, num_rounds,
