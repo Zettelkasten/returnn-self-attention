@@ -55,6 +55,8 @@ def add_lsh_attention_layer(
   hash_mask_value = 2 ** 31 - 1
   assert hash_mask_value > num_hashes
   assert chunk_alignment in {'identity', 'search_bounds_centered'}
+  assert small_mask_value < 0
+  even_smaller_mask_value = small_mask_value * 10**5
 
   def chunk_query_sequence(name, pad_value, have_feature_dim=False):
     """
@@ -272,7 +274,7 @@ def add_lsh_attention_layer(
     'class': 'eval', 'from': [output + '_query_chunk_alignment_unbounded', output + '_key_chunk_count'],
     'eval': 'tf.math.floormod(source(0), source(1))'}  # [query-chunk,key-chunk-offset] :: key-chunk
 
-  # Compute chunk alignment duplicate mask: mask[i] is true iff alignment[j] != alignment[i] for all j < i
+  # Compute chunk alignment duplicate mask: mask[i] is true iff alignment[j] == alignment[i] for any j < i
   d[output + '_query_chunk_alignment_other'] = {
     'class': 'name_axis', 'from': [output + '_query_chunk_alignment'], 'axis': 'stag:key-chunk-offset',
     'description': 'other-key-chunk-offset'}  # [query-chunk,other-key-chunk-offset] :: key-chunk
@@ -297,6 +299,50 @@ def add_lsh_attention_layer(
     'class': 'reduce', 'mode': 'any', 'from': [output + '_query_chunk_alignment_compare_left_only'],
     'axis': 'stag:other-key-chunk-offset'}  # [query-chunk,key-chunk-offset]
 
+  # Compute multiple hash round duplicate mask:
+  # mask[round,query-chunk,query-chunk-offset,key-chunk-offset] is true iff
+  # unsorted_hashes[other_round,original_query_pos(round, query_chunk, query_chunk_offset)]
+  #  == unsorted_hashes[other_round, original_key_pos(round, query_chunk, key_chunk_offset)]
+  # for any other_round < round
+  if not allow_duplicate_attention:
+    assert num_rounds == 1 or mask_different_hashes, 'cannot be implemented efficiently'
+    d[output + '_other_round_queries_hashed'] = {
+      'class': 'name_axis', 'from': [output + '_queries_hashed'], 'axis': 'stag:att-round',
+      'description': 'other-att-round'}  # [B,(shuffled-)query-time,n,other_round] :: d_h
+    d[output + '_sorted_chunked_other_round_queries_hashed'] = {
+      'class': 'gather', 'from': [output + '_other_round_queries_hashed'],
+      'position': output + '_sorted_chunked_queries_orig_indices',
+      'axis': query_time_axis}  # [B,n,r,query-chunk,query-window,other_round] :: d_h
+    d[output + '_other_round_keys_hashed'] = {
+      'class': 'name_axis', 'from': [output + '_keys_hashed'], 'axis': 'stag:att-round',
+      'description': 'other-att-round'}  # [B,(shuffled-)key-time,n,other_round] :: d_h
+    d[output + '_sorted_chunked_stacked_other_round_keys_hashed'] = {
+      'class': 'gather', 'from': [output + '_other_round_keys_hashed'],
+      'position': output + '_sorted_chunked_stacked_keys_orig_indices',
+      'axis': key_time_axis}  # [B,n,r,query-chunk,stacked-key-window,other_round] :: d_h
+    d[output + '_sorted_chunked_other_round_compare'] = {
+      'class': 'compare',
+      'from': [output + '_sorted_chunked_other_round_queries_hashed', output + '_sorted_chunked_stacked_other_round_keys_hashed'],  # noqa
+      'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window,other-round] :: bool
+
+    d[output + '_round_indices'] = {
+      'class': 'range_in_axis', 'from': [output + '_queries_hashed'], 'axis': 'stag:att-round',
+      'keepdims': False}  # [round]
+    d[output + '_other_round_indices'] = {
+      'class': 'range_in_axis', 'from': [output + '_other_round_queries_hashed'],
+      'axis': 'stag:other-att-round', 'keepdims': False}  # [other-round]
+    d[output + '_round_left_only'] = {
+      'class': 'compare',
+      'from': [output + '_round_indices', output + '_other_round_indices'],
+      'kind': 'greater'}  # [round,other-round]
+    d[output + '_sorted_chunked_other_round_compare_left_only'] = {
+      'class': 'combine',
+      'from': [output + '_sorted_chunked_other_round_compare', output + '_round_left_only'],
+      'kind': 'logical_and'}  # [B,n,r,query-chunk,query-window,stacked-key-window,other-round] :: bool
+    d[output + '_sorted_chunked_round_duplicate_mask'] = {
+      'class': 'reduce', 'mode': 'any', 'from': [output + '_sorted_chunked_other_round_compare_left_only'],
+      'axis': 'stag:other-att-round'}  # [B,n,r,query-chunk,query-window,stacked-key-window] :: bool
+
   # Collect stacked key and value chunks
   stack_chunked_key_sequence('keys')  # [B,n,r,query-chunk,stacked-key-window,F|d_k]
   stack_chunked_key_sequence('values')  # [B,n,r,query-chunk,stacked-key-window,F|d_v]
@@ -318,7 +364,7 @@ def add_lsh_attention_layer(
       'from': [output + '_sorted_chunked_queries_hashed', output + '_sorted_chunked_stacked_keys_hashed'],
       'kind': 'not_equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
     if is_small:
-      # only set those positions to the small mask value that were masked NOT masked away with -inf before.
+      # only set those positions to the small mask value that were NOT masked away with -inf before.
       d[output + '_sorted_chunked_small_mask_matching_hash'] = {
         'class': 'eval',
         'from': [output + '_sorted_chunked_small_mask_matching_hash_all', output + '_sorted_chunked_mask'],
@@ -331,7 +377,6 @@ def add_lsh_attention_layer(
     'from': [output + '_sorted_chunked_stacked_keys_hashed'], 'value': hash_mask_value,
     'kind': 'equal'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
   large_masking_layers_from.append(output + '_sorted_chunked_mask_valid_key_position')
-  # _query_chunk_alignment
   d[output + '_sorted_chunked_mask_key_chunk_duplicates_unnamed'] = {
     'class': 'repeat', 'from': [output + '_query_chunk_alignment_duplicate_mask'],
     'repetitions': key_chunk_size, 'axis': 'stag:key-chunk-offset'}  # [B,n,r,query-chunk,key-chunk-offset*key-window]
@@ -340,7 +385,8 @@ def add_lsh_attention_layer(
     'axis': 'stag:repeated|stag:key-chunk-offset',
     'description': 'stacked-key-window'}  # [B,n,r,query-chunk,stacked-key-window]
   large_masking_layers_from.append(output + '_sorted_chunked_mask_key_chunk_duplicates')
-  assert num_rounds == 1 or allow_duplicate_attention, 'allow_duplicate_attention=False for multi round not implemented'
+  if not allow_duplicate_attention:
+    large_masking_layers_from.append(output + '_sorted_chunked_round_duplicate_mask')
   if mask_current:
     d[output + '_sorted_chunked_small_mask_current'] = {
       'class': 'compare',
@@ -386,9 +432,11 @@ def add_lsh_attention_layer(
     'class': 'switch', 'condition': output + '_sorted_chunked_small_mask',
     'true_from': small_mask_value,
     'false_from': output + '_sorted_chunked_energy_unmasked2'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
+  # in multi-round att: ignore rounds that cannot attend anywhere. (for single round the mask value does not matter.)
+  # however, prioritize e.g. mask_current => use smaller value here
   d[output + '_sorted_chunked_energy_feature'] = {
     'class': 'switch', 'condition': output + '_sorted_chunked_final_mask',
-    'true_from': 0.0,  # value does not matter, but must be finite
+    'true_from': even_smaller_mask_value,
     'false_from': output + '_sorted_chunked_energy_unmasked3'}  # [B,n,r,query-chunk,query-window,stacked-key-window]
   d[output + '_sorted_chunked_energy'] = {
     'class': 'reinterpret_data', 'from': [output + '_sorted_chunked_energy_feature'],

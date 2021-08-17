@@ -292,7 +292,6 @@ def test_lsh_self_attention_hashing():
     random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False, chunk_align='search_bounds_centered')
 
 
-@unittest.skip('multi round hashing not implemented currently')
 def test_lsh_self_attention_hashing_multi_round():
   # hash rounds do not help here, as the hash classes for all rounds are equal
   _test_lsh_self_attention_hashing_all(
