@@ -825,7 +825,7 @@ def add_vanilla_self_attention_layer(
       'class': 'cum_concat', 'from': [output + '_key']}  # [B,T|rec-history,n,F|d_k]
     d[output + '_value_accum'] = {
       'class': 'cum_concat', 'from': [output + '_value']}  # [B,T|rec-history,n,F|d_v]
-    key_axis = 'stag:rec_history'
+    key_axis = 'stag:rec-history'
   else:
     key_dim_tag = DimensionTag(kind=DimensionTag.Types.Time, description='self-att-keys')
     d[output + '_key_accum'] = {
