@@ -817,16 +817,27 @@ def add_vanilla_self_attention_layer(
     d[output + '_value'] = {
       'class': 'copy', 'from': [output + '_qv_split/1']}  # [B,T?,n,F|d_v]
 
-  # Accumulate keys/values
-  d[output + '_key_accum'] = {
-    'class': 'cum_concat', 'from': [output + '_key']}  # [B,T|rec-history,n,F|d_k]
-  d[output + '_value_accum'] = {
-    'class': 'cum_concat', 'from': [output + '_value']}  # [B,T|rec-history,n,F|d_v]
+  # Accumulate keys/values or rename the axis
+  if inside_rec_layer:
+    d[output + '_key_accum'] = {
+      'class': 'cum_concat', 'from': [output + '_key']}  # [B,T|rec-history,n,F|d_k]
+    d[output + '_value_accum'] = {
+      'class': 'cum_concat', 'from': [output + '_value']}  # [B,T|rec-history,n,F|d_v]
+    key_axis = 'stag:rec_history'
+  else:
+    key_dim_tag = DimensionTag(kind=DimensionTag.Types.Time, description='self-att-keys')
+    d[output + '_key_accum'] = {
+      'class': 'reinterpret_data', 'set_dim_tags': {time_axis: key_dim_tag},
+      'from': [output + '_key']}  # [B,T|keys,n,F|d_k]
+    d[output + '_value_accum'] = {
+      'class': 'reinterpret_data', 'set_dim_tags': {time_axis: key_dim_tag},
+      'from': [output + '_value']}  # [B,T|keys,n,F|d_v]
+    key_axis = 'stag:' + key_dim_tag.description
 
   # Calculate the energies
   d[output + '_energy'] = {
     'class': 'dot', 'from': [output + '_query', output + '_key_accum'],
-    'red1': 'static:-1', 'red2': 'static:-1', 'var1': time_axis + '?', 'var2': 'stag:rec-history'}  # [B,n,T?,T|rec-history]
+    'red1': 'static:-1', 'red2': 'static:-1', 'var1': time_axis + '?', 'var2': key_axis}  # [B,n,T?,T|rec-history]
 
   need_indices = past_only or mask_current
   if need_indices:
@@ -837,7 +848,7 @@ def add_vanilla_self_attention_layer(
         'keepdims': False}  # [T]
       query_indices_from = output + '_query_indices'
     d[output + '_key_accum_indices'] = {
-      'class': 'range_in_axis', 'from': [output + '_key_accum'], 'axis': 'stag:rec-history',
+      'class': 'range_in_axis', 'from': [output + '_key_accum'], 'axis': key_axis,
       'keepdims': False}  # [T|rec-history]
   if past_only:
     d[output + '_energy_unmasked'] = d[output + '_energy']
@@ -860,7 +871,7 @@ def add_vanilla_self_attention_layer(
   # can still become NaN.
   # If past_only=False, do apply the normal time mask.
   d[output + '_weights'] = {
-    'class': 'softmax_over_spatial', 'from': [output + '_energy'], 'axis': 'stag:rec-history',
+    'class': 'softmax_over_spatial', 'from': [output + '_energy'], 'axis': key_axis,
     'energy_factor': key_dim ** -0.5,
     'use_time_mask': not past_only}  # [B,n,T?,T|rec-history]
   d[output + '_weights_drop'] = {
@@ -869,7 +880,6 @@ def add_vanilla_self_attention_layer(
 
   d[output + '_output'] = {
     'class': 'dot', 'from': [output + '_weights_drop', output + '_value_accum'],
-    'red1': 'stag:rec-history', 'red2': 'stag:rec-history', 'var1': time_axis + '?', 'var2': 'static:-1'}  # [B,n,T?,F|d_v]
+    'red1': key_axis, 'red2': key_axis, 'var1': time_axis + '?', 'var2': 'static:-1'}  # [B,n,T?,F|d_v]
   d[output + '_att'] = {
-    'class': 'merge_dims', 'axes': 'static',
-    'from': [output + '_output']}  # [B,T?,F|n*d_v]
+    'class': 'merge_dims', 'axes': 'static', 'from': [output + '_output']}  # [B,T?,F|n*d_v]
