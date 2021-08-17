@@ -1,7 +1,7 @@
 import numpy as np
 from tensorflow.python.ops import init_ops
 
-from self_attention import make_lsh_hash_gen, apply_lsh_hash_gen, argsort_eval, normalize_eval
+from self_attention import make_lsh_hash_gen, apply_lsh_hash_gen, argsort_eval, normalize_eval, clip_eval
 
 
 def add_lsh_attention_layer(
@@ -168,6 +168,13 @@ def add_lsh_attention_layer(
   chunk_query_sequence('queries_orig_indices', pad_value=hash_mask_value)  # [B,n,r,query-chunk,query-window] :: query-time  # noqa
   chunk_key_sequence('keys_orig_indices', pad_value=hash_mask_value)  # [B,n,r,key-chunk,key-window] :: key-time
   stack_chunked_key_sequence('keys_orig_indices')  # [B,n,r,query-chunk,stacked-key-window] :: key-time
+  # clip to avoid index error on CPU when accessing masked away positions
+  d[output + '_sorted_chunked_queries_orig_indices_clipped'] = {
+    'class': 'eval', 'from': [output + '_sorted_chunked_queries_orig_indices'],
+    'eval': clip_eval, 'eval_locals': {'mask_value': hash_mask_value}}  # [B,n,r,query-chunk,query-window] :: d_h
+  d[output + '_sorted_chunked_stacked_keys_orig_indices_clipped'] = {
+    'class': 'eval', 'from': [output + '_sorted_chunked_stacked_keys_orig_indices'],
+    'eval': clip_eval, 'eval_locals': {'mask_value': hash_mask_value}}  # [B,n,r,query-chunk,stacked-key-window] :: d_h
 
   # Invert permutation to undo sorting later
   d[output + '_queries_sort_indices'] = {
@@ -321,14 +328,14 @@ def add_lsh_attention_layer(
       'description': 'other-att-round'}  # [B,(shuffled-)query-time,n,other_round] :: d_h
     d[output + '_sorted_chunked_other_round_queries_hashed'] = {
       'class': 'gather', 'from': [output + '_other_round_queries_hashed'],
-      'position': output + '_sorted_chunked_queries_orig_indices',
+      'position': output + '_sorted_chunked_queries_orig_indices_clipped',
       'axis': query_time_axis}  # [B,n,r,query-chunk,query-window,other_round] :: d_h
     d[output + '_other_round_keys_hashed'] = {
       'class': 'name_axis', 'from': [output + '_keys_hashed'], 'axis': 'stag:att-round',
       'description': 'other-att-round'}  # [B,(shuffled-)key-time,n,other_round] :: d_h
     d[output + '_sorted_chunked_stacked_other_round_keys_hashed'] = {
       'class': 'gather', 'from': [output + '_other_round_keys_hashed'],
-      'position': output + '_sorted_chunked_stacked_keys_orig_indices',
+      'position': output + '_sorted_chunked_stacked_keys_orig_indices_clipped',
       'axis': key_time_axis}  # [B,n,r,query-chunk,stacked-key-window,other_round] :: d_h
     d[output + '_sorted_chunked_other_round_compare'] = {
       'class': 'compare',
