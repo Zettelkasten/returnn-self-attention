@@ -130,41 +130,28 @@ def add_lsh_attention_layer(
       time_axis=key_time_axis, num_hashes=num_hashes, hash_mask_value=mask_value,
       hash_dropin=key_hash_dropin)  # [B,key-time,n,r] :: d_h
 
-  # Maybe shuffle the keys and values
-  if shuffle_kv:
-    # We apply hash gen BEFORE we shuffle the keys, because apply_lsh_hash_gen applies the masking using the seq
-    # lengths.
-    d[output + '_keys_shuffled_orig_indices'] = {
-      'class': 'eval', 'from': [output + '_keys_all_indices'],
-      'eval': 'tf.random.shuffle(source(0))'}  # [(shuffled-)key-time] :: key-time
-    assert output + '_keys_hashed' in d and output + '_keys_hashed_not_shuffled' not in d
-    d[output + '_keys_hashed_not_shuffled'] = d[output + '_keys_hashed']
-    d[output + '_keys_hashed'] = {
-      'class': 'gather', 'from': [output + '_keys_hashed_not_shuffled'],
-      'position': output + '_keys_shuffled_orig_indices', 'axis': key_time_axis}  # [B,(shuffled-)key-time,n,r] :: d_h
-    assert output + '_shuffled_keys' not in d
-    d[output + '_shuffled_keys'] = {
-      'class': 'gather', 'from': [keys_input], 'position': output + '_keys_shuffled_orig_indices',
-      'axis': key_time_axis}  # [B,(shuffled-)key-time,n,r,F|d_k]
-    keys_input = output + '_shuffled_keys'
-    assert output + '_shuffled_values' not in d
-    d[output + '_shuffled_values'] = {
-      'class': 'gather', 'from': [values_input], 'position': output + '_keys_shuffled_orig_indices',
-      'axis': key_time_axis}  # [B,(shuffled-)key-time,n,r,F|d_v]
-    values_input = output + '_shuffled_values'
-    # Invert shuffling for receiving orig positions later
-    d[output + '_keys_shuffled_indices'] = {
-      'class': 'scatter_nd', 'from': [output + '_keys_all_indices'],
-      'position': output + '_keys_shuffled_orig_indices', 'position_axis': key_time_axis,
-      'output_dim_via_time_from': output + '_keys_shuffled_orig_indices'}  # [key-time] :: (shuffled-)key-time
-
   # Compute a permutation by looking at the unsorted hashes
   d[output + '_sorted_queries_orig_indices'] = {
     'class': 'eval', 'eval': argsort_eval % query_time_axis,
     'from': [output + '_queries_hashed']}  # [B,sorted-query-time,n,r] :: query-time
-  d[output + '_sorted_keys_orig_indices'] = {
-    'class': 'eval', 'eval': argsort_eval % key_time_axis,
-    'from': [output + '_keys_hashed']}  # [B,sorted-key-time,n,r] :: (shuffled-)key-time
+  if shuffle_kv:
+    d[output + '_shuffled_keys_orig_indices'] = {
+      'class': 'eval', 'from': [output + '_keys_all_indices'],
+      'eval': 'tf.random.shuffle(source(0))'}  # [shuffled-key-time] :: key-time
+    d[output + '_shuffled_keys_hashed'] = {
+      'class': 'gather', 'from': [output + '_keys_hashed'],
+      'position': output + '_shuffled_keys_orig_indices', 'axis': key_time_axis}  # [B,shuffled-key-time,n,r] :: d_h
+    d[output + '_sorted_keys_shuffled_indices'] = {
+      'class': 'eval', 'eval': argsort_eval % key_time_axis,
+      'from': [output + '_shuffled_keys_hashed']}  # [B,sorted-key-time,n,r] :: shuffled-key-time
+    d[output + '_sorted_keys_orig_indices'] = {
+      'class': 'gather', 'from': [output + '_shuffled_keys_orig_indices'],
+      'position': output + '_sorted_keys_shuffled_indices',
+      'axis': key_time_axis}  # [B,sorted-key-time,n,r] :: key-time
+  else:
+    d[output + '_sorted_keys_orig_indices'] = {
+      'class': 'eval', 'eval': argsort_eval % key_time_axis,
+      'from': [output + '_keys_hashed']}  # [B,sorted-key-time,n,r] :: key-time
   chunk_query_sequence('queries_orig_indices', pad_value=hash_mask_value)  # [B,n,r,query-chunk,query-window] :: query-time  # noqa
   chunk_key_sequence('keys_orig_indices', pad_value=hash_mask_value)  # [B,n,r,key-chunk,key-window] :: key-time
   stack_chunked_key_sequence('keys_orig_indices')  # [B,n,r,query-chunk,stacked-key-window] :: key-time
@@ -185,14 +172,7 @@ def add_lsh_attention_layer(
   d[output + '_keys_sort_indices'] = {
     'class': 'scatter_nd', 'from': [output + '_keys_all_indices'],
     'position': output + '_sorted_keys_orig_indices', 'position_axis': key_time_axis,
-    'output_dim_via_time_from': output + '_sorted_keys_orig_indices'}  # [B,n,r,(shuffled-)key-time] :: sorted-key-time
-  if shuffle_kv:
-    # need to unshuffle indices too
-    assert output + '_keys_sort_indices' in d and output + '_shuffled_keys_sort_indices' not in d
-    d[output + '_shuffled_keys_sort_indices'] = d[output + '_keys_sort_indices']
-    d[output + '_keys_sort_indices'] = {
-      'class': 'gather', 'from': [output + '_shuffled_keys_sort_indices'], 'axis': key_time_axis,
-      'position': output + '_keys_shuffled_indices'}  # [B,n,r,key-time] :: sorted-key-time
+    'output_dim_via_time_from': output + '_sorted_keys_orig_indices'}  # [B,n,r,key-time] :: sorted-key-time
 
   # Sort hashes themselves
   d[output + '_sorted_queries_hashed'] = {
@@ -325,14 +305,14 @@ def add_lsh_attention_layer(
     assert num_rounds == 1 or mask_different_hashes, 'cannot be implemented efficiently'
     d[output + '_other_round_queries_hashed'] = {
       'class': 'name_axis', 'from': [output + '_queries_hashed'], 'axis': 'stag:att-round',
-      'description': 'other-att-round'}  # [B,(shuffled-)query-time,n,other_round] :: d_h
+      'description': 'other-att-round'}  # [B,query-time,n,other_round] :: d_h
     d[output + '_sorted_chunked_other_round_queries_hashed'] = {
       'class': 'gather', 'from': [output + '_other_round_queries_hashed'],
       'position': output + '_sorted_chunked_queries_orig_indices_clipped',
       'axis': query_time_axis}  # [B,n,r,query-chunk,query-window,other_round] :: d_h
     d[output + '_other_round_keys_hashed'] = {
       'class': 'name_axis', 'from': [output + '_keys_hashed'], 'axis': 'stag:att-round',
-      'description': 'other-att-round'}  # [B,(shuffled-)key-time,n,other_round] :: d_h
+      'description': 'other-att-round'}  # [B,key-time,n,other_round] :: d_h
     d[output + '_sorted_chunked_stacked_other_round_keys_hashed'] = {
       'class': 'gather', 'from': [output + '_other_round_keys_hashed'],
       'position': output + '_sorted_chunked_stacked_keys_orig_indices_clipped',

@@ -162,7 +162,7 @@ def test_lsh_self_attention_no_mask_different_hashes_no_duplicates():
 
 
 def _test_lsh_self_attention_hashing(
-    hash_sequence, chunk_size, chunks_before, chunks_after, past_only=False, chunk_align='identity'):
+    hash_sequence, chunk_size, chunks_before, chunks_after, past_only=False, chunk_align='identity', shuffle_kv=False):
   """
   :param np.ndarray hash_sequence: shape [batch, heads, rounds, time], dtype int32, with hash classes
   :return:
@@ -174,7 +174,7 @@ def _test_lsh_self_attention_hashing(
   with make_scope() as session:
     print(
       '------ Testing with chunk_size =', chunk_size, 'chunks_before =', chunks_before, 'chunks_after =', chunks_after,
-      'chunk_align =', chunk_align)
+      'chunk_align =', chunk_align, 'shuffle_kv =', shuffle_kv)
     hash_sequence = np.asarray(hash_sequence, dtype='int32')
     if len(hash_sequence.shape) == 3:
       # hash_sequence is [batch, heads, time]
@@ -192,23 +192,35 @@ def _test_lsh_self_attention_hashing(
     add_lsh_self_attention_layer(
       net_dict, 'data', 'lsh', inside_rec_layer=False, past_only=past_only, num_heads=num_heads, num_rounds=num_rounds,
       key_dim=key_dim, value_dim=value_dim, num_hashes=num_hashes, chunk_size=chunk_size, chunks_before=chunks_before,
-      chunks_after=chunks_after,
+      chunks_after=chunks_after, share_key_query=True,
       mask_current=True, mask_different_hashes=True, allow_duplicate_attention=False, chunk_alignment=chunk_align,
-      debug_print=False)
+      shuffle_kv=shuffle_kv, debug_print=False)
     # Now we override the keys/queries, lsh_value and lsh_kq_hash with our own inputs
+
     def get_kqv_sequence(self, source):
       assert source(0, as_data=True).shape == (None, num_heads, key_dim)
       return tf.constant(kqv_sequence)
+
     def get_hash_sequence(self, source):
       assert source(0, as_data=True).shape == (num_heads, num_rounds, None)
       return tf.constant(hash_sequence)
-    net_dict["lsh_kq_original"], net_dict["lsh_value_original"] = net_dict["lsh_query"], net_dict["lsh_value"]
-    net_dict["lsh_query_hash_original"] = net_dict["lsh_queries_hashed"]
-    net_dict["lsh_query"] = {"class": "eval", "from": "lsh_kq_original", "eval": get_kqv_sequence}
-    net_dict["lsh_value"] = {"class": "eval", "from": "lsh_kq_original", "eval": get_kqv_sequence}
-    net_dict["lsh_queries_hashed"] = {"class": "eval", "from": "lsh_query_hash_original", "eval": get_hash_sequence}
-    net_dict["lsh_keys_hashed"] = {"class": "copy", "from": "lsh_queries_hashed"}
+
+    assert "lsh_query" in net_dict and "lsh_queries_hashed" in net_dict and "lsh_queries_hashed_neg_mask"
+    net_dict["unittest_kq_ignored_orig"] = net_dict["lsh_query"]  # keep a copy of the original value for the data shape
+    net_dict["lsh_query"] = {"class": "eval", "from": "unittest_kq_ignored_orig", "eval": get_kqv_sequence}
+    # lsh_key is just copied from lsh_query because share_kq=True
+    assert "lsh_queries_hashed" in net_dict and "lsh_queries_hashed_neg_mask" in net_dict
+    net_dict["unittest_q_hash_ignored_orig"] = net_dict[
+      "lsh_queries_hashed"]  # keep a copy of the original value for the data shape
+    net_dict["lsh_queries_hashed"] = {"class": "eval", "from": "unittest_q_hash_ignored_orig", "eval": get_hash_sequence}
     net_dict["lsh_queries_hashed_neg_mask"] = {"class": "copy", "from": "lsh_queries_hashed"}
+
+    assert "lsh_value" in net_dict
+    net_dict["unittest_v_ignored_orig"] = net_dict["lsh_value"]
+    net_dict["lsh_value"] = {"class": "eval", "from": "unittest_v_ignored_orig", "eval": get_kqv_sequence}
+
+    assert "lsh_keys_hashed" in net_dict and "lsh_keys_hashed_neg_mask" in net_dict
+    net_dict["lsh_keys_hashed"] = {"class": "copy", "from": "lsh_queries_hashed"}
     net_dict["lsh_keys_hashed_neg_mask"] = {"class": "copy", "from": "lsh_queries_hashed"}
 
     config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
@@ -254,14 +266,15 @@ def _test_lsh_self_attention_hashing(
 
 def _test_lsh_self_attention_hashing_all(hash_sequence, chunk_size, chunks_before, chunks_after):
   for past_only in [False, True]:
-    _test_lsh_self_attention_hashing(
-      hash_sequence, chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
-      past_only=past_only, chunk_align='identity')
-    # with chunk_align='search_bounds_centered' these tests should always still work
-    if chunks_before == chunks_after:
+    for shuffle_kv in [False, True]:
       _test_lsh_self_attention_hashing(
         hash_sequence, chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
-        past_only=past_only, chunk_align='search_bounds_centered')
+        past_only=past_only, chunk_align='identity', shuffle_kv=shuffle_kv)
+      # with chunk_align='search_bounds_centered' these tests should always still work
+      if chunks_before == chunks_after:
+        _test_lsh_self_attention_hashing(
+          hash_sequence, chunk_size=chunk_size, chunks_before=chunks_before, chunks_after=chunks_after,
+          past_only=past_only, chunk_align='search_bounds_centered', shuffle_kv=shuffle_kv)
 
 
 def test_lsh_self_attention_hashing():
@@ -290,6 +303,11 @@ def test_lsh_self_attention_hashing():
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=3, chunks_before=1, chunks_after=0, past_only=True)
   _test_lsh_self_attention_hashing(
     random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False, chunk_align='search_bounds_centered')
+  _test_lsh_self_attention_hashing(
+    random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False, shuffle_kv=True)
+  _test_lsh_self_attention_hashing(
+    random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False, chunk_align='search_bounds_centered',
+    shuffle_kv=True)
 
 
 def test_lsh_self_attention_hashing_multi_round():
@@ -320,6 +338,14 @@ def test_lsh_self_attention_hashing_multi_round():
   random_hashes = np.random.randint(low=0, high=26, size=(3,4,8,34), dtype='int32')
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=5, chunks_before=1, chunks_after=1, past_only=False)
   _test_lsh_self_attention_hashing(random_hashes, chunk_size=5, chunks_before=1, chunks_after=0, past_only=True)
+  _test_lsh_self_attention_hashing(
+    random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False,
+    chunk_align='search_bounds_centered')
+  _test_lsh_self_attention_hashing(
+    random_hashes, chunk_size=5, chunks_before=1, chunks_after=1, past_only=False, shuffle_kv=True)
+  _test_lsh_self_attention_hashing(
+    random_hashes, chunk_size=3, chunks_before=1, chunks_after=1, past_only=False,
+    chunk_align='search_bounds_centered', shuffle_kv=True)
 
 
 def test_vanilla_self_attention_equal_to_SelfAttentionLayer():
