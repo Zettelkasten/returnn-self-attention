@@ -412,6 +412,7 @@ def add_lsh_attention_layer(
   # and thus need to have at least one masked key for every query.
   # Otherwise, the gradients will be NaN.
   # We ensure this by masking all energies with a small (finite) number.
+  # Also see https://github.com/rwth-i6/returnn/issues/576
   d[output + '_sorted_chunked_final_mask'] = {
     'class': 'reduce', 'from': [output + '_sorted_chunked_mask'],
     'mode': 'all', 'axis': 'stag:stacked-key-window'}  # [B,n,r,query-chunk,query-window]
