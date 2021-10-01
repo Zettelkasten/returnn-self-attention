@@ -3,6 +3,7 @@ import sys
 from typing import Any
 
 import numpy as np
+from numpy.testing import assert_almost_equal
 
 sys.path.insert(1, '/u/petrick/software/returnn/official/')
 sys.path.insert(1, '/u/petrick/software/returnn/official/tests')
@@ -726,6 +727,70 @@ def test_EquallyDistributedHashInitializer():
   assert np.all(largest_class_size >= ideal_share)
   assert np.all(smallest_class_size > 0.7 * ideal_share)
   assert np.all(largest_class_size < 1.3 * ideal_share)
+
+
+def _test_recompute_gradients(dropout: float = 0.0):
+  num_heads, key_dim, value_dim = 2, 3, 3
+  net_dict = {
+    'embed': {'class': 'linear', 'n_out': 5, 'activation': None, 'from': 'data'},
+    'self_att_print': {'class': 'print', 'from': 'embed'},
+    'self_att_att': None,
+    'loss': {'class': 'reduce', 'axes': '*', 'mode': 'sum', 'from': 'self_att_att', 'is_output_layer': True}
+  }
+
+  add_vanilla_self_attention_layer(
+    d=net_dict, input='self_att_print', output='self_att', num_heads=num_heads, key_dim=key_dim, value_dim=value_dim,
+    inside_rec_layer=False, dropout=dropout)
+  net_dict['self_att_att']['is_output_layer'] = True
+  pprint(net_dict)
+
+  with make_scope() as session:
+    config = Config({"debug_print_layer_output_template": True, "debug_add_check_numerics_ops": True})
+
+    config.set('extern_data', {
+      "data": {"dim": 7, "sparse": True},
+      "classes": {"dim": 6, "sparse": True, "available_for_inference": False}})
+    net = TFNetwork(config=config, search_flag=False, train_flag=True, eval_flag=False)
+    net.construct_from_dict(net_dict)
+
+    loss_layer= net.get_layer('loss')
+    params = net.get_trainable_params()
+    vanilla_grads = tf.gradients(ys=loss_layer.output.placeholder, xs=params)
+
+    from recompute_gradients import recomputed_tf_gradients
+    recomputed_grads = recomputed_tf_gradients(
+      recompute_ops_regex='self_att.*', ys=loss_layer.output.placeholder, xs=params)
+
+    net.initialize_params(session)
+    # Write to tensorboard for easy debugging
+    print("Writing TF log file.")
+    writer = tf_compat.v1.summary.FileWriter("/tmp/test-recompute-grads")
+    writer.add_graph(session.graph)
+    writer.close()
+
+    print("This should print twice:")
+    loss_, vanilla_grads_, recomputed_grads_ = session.run(
+      [loss_layer.output.placeholder, vanilla_grads, recomputed_grads],
+      feed_dict=make_feed_dict(net.extern_data.data.values()))
+
+    print("Got loss:")
+    pprint(loss_)
+
+    assert len(vanilla_grads_) == len(recomputed_grads_)
+    from tensorflow.python.framework.ops import IndexedSlicesValue
+    for vanilla_grad, recomputed_grad in zip(vanilla_grads_, recomputed_grads_):
+      if isinstance(vanilla_grad, IndexedSlicesValue):
+        assert isinstance(recomputed_grad, IndexedSlicesValue)
+        assert_almost_equal(vanilla_grad.values, recomputed_grad.values)
+        assert_almost_equal(vanilla_grad.indices, recomputed_grad.indices)
+        assert_almost_equal(vanilla_grad.dense_shape, recomputed_grad.dense_shape)
+      else:
+        assert_almost_equal(vanilla_grad, recomputed_grad)
+
+
+def test_recompute_gradients():
+  _test_recompute_gradients(dropout=0.0)
+  _test_recompute_gradients(dropout=0.5)
 
 
 if __name__ == "__main__":
