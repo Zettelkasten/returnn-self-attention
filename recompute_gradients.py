@@ -19,26 +19,22 @@ def recomputed_tf_gradients(recompute_ops_regex: str,
     graph = ys[0].graph
 
     # compute gradients normally
-    before_ops = graph.get_operations()
+    all_fwd_ops = graph.get_operations()
     x_grads = tf_gradients(ys=ys, xs=xs, grad_ys=grad_ys, **kwargs)
-    all_grad_ops: List[tf.Operation] = list(set(graph.get_operations()) - set(before_ops))
+    all_grad_ops: List[tf.Operation] = list(set(graph.get_operations()) - set(all_fwd_ops))
     assert all(x_grad.op in all_grad_ops for x_grad in x_grads)
-
-    bwd_ops_from_x_grads: List[tf.Operation] = ge.get_backward_walk_ops([y.op for y in ys], inclusive=True)
-    fwd_ops: List[tf.Operation] = ge.get_forward_walk_ops(
-        [x.op for x in xs], within_ops=bwd_ops_from_x_grads, inclusive=True)
 
     sanity_checks = False
 
-    recompute_ops = [op for op in fwd_ops if re.match(recompute_ops_regex, op.name) and len(op.inputs) > 0]
+    recompute_ops = [op for op in all_fwd_ops if re.match(recompute_ops_regex, op.name) and len(op.inputs) > 0]
     assert len(recompute_ops) > 0, 'bad regex %r' % recompute_ops_regex
 
     # make a copy of recompute fwd pass tensors
     with tf.name_scope('recompute_fwd_pass'):
         if sanity_checks:
             assert all(recompute_op not in recompute_ops for recompute_op in recompute_ops)
-            assert all(x.op in fwd_ops and x.op not in recompute_ops for x in xs)
-            assert all(y.op in fwd_ops and y.op not in recompute_ops for y in ys)
+            assert all(x.op in all_fwd_ops and x.op not in recompute_ops for x in xs)
+            assert all(y.op in all_fwd_ops and y.op not in recompute_ops for y in ys)
             assert all(len(op.outputs) >= 1 for op in recompute_ops)
         recompute_ts: List[tf.Tensor] = [t for op in recompute_ops for t in op.outputs]
         print('Recomputing forward pass tensors matching %r in backward pass: %r' % (recompute_ops_regex, recompute_ts))
